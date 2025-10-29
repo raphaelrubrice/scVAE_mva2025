@@ -27,7 +27,7 @@ class GMMVAE(torch.nn.Module):
 
         self.f_y_parameters = torch.nn.Sequential(
             torch.nn.Linear(in_features=M, out_features=K),
-            torch.nn.Softmax(dim=-1)
+            torch.nn.LogSoftmax(dim=-1)
         )
 
         self.f_x_parameters = torch.nn.Sequential(
@@ -60,9 +60,9 @@ NN = GMMVAE(N=N, M=M, L=L, K=K)
 
 LAMBDAs, MUs, VARs, z, PIs = NN(RNA_seq)
 
-prior_zGy, prior_y = (torch.zeros(size=(K, L)), torch.ones(size=(K, L))), torch.ones(size=(K,))/K
+prior_zGy_mu, prior_zGy_var , prior_y = torch.zeros(size=(K, L)), torch.ones(size=(K, L)), torch.log_softmax(torch.ones(size=(K,))/K, dim=0)
 gamma_zGy, gamma_y = 1, 1
 
-loss = GMMVAE_loss(prior_zGy, prior_y, gamma_zGy, gamma_y)
+loss = GMMVAE_loss(prior_zGy_mu, prior_zGy_var, prior_y, gamma_zGy, gamma_y)
 
-loss(RNA_seq, LAMBDAs, MUs, VARs, PIs)
+print(loss(RNA_seq, LAMBDAs, MUs, VARs, PIs))
