@@ -1,4 +1,5 @@
 import torch
+from my_loss import GMMVAE_loss
 
 
 class GMMVAE(torch.nn.Module):
@@ -41,24 +42,27 @@ class GMMVAE(torch.nn.Module):
         x_concat_y = torch.concat([torch.concat([x, torch.tile(y, (self.N, 1))], dim=-1)[None, :, :] for y in torch.eye(self.K)], dim=0)
         epsilon = torch.randn(self.K, self.N, self.L)
 
-        PI = self.f_y_parameters(x)
+        PIs = self.f_y_parameters(x)
 
-        MU, VAR = self.f_z_mu(x_concat_y), self.f_z_var(x_concat_y)
+        MUs, VARs = self.f_z_mu(x_concat_y), self.f_z_var(x_concat_y)
 
-        z = MU + torch.sqrt(VAR)*epsilon
+        z = MUs + torch.sqrt(VARs)*epsilon
 
-        LAMBDA = self.f_x_parameters(z)
+        LAMBDAs = self.f_x_parameters(z)
 
-        return LAMBDA, z, PI
+        return LAMBDAs, MUs, VARs, z, PIs
 
 
-N, M = 100, 200
+N, M, L, K = 100, 200, 10, 5
 RNA_seq = torch.randint(low=0, high=1000, size=(N, M), dtype=torch.float)
 
-NN = GMMVAE(N=100, M=200, L=10, K=5)
+NN = GMMVAE(N=N, M=M, L=L, K=K)
 
-LAMBDA, z, PI = NN(RNA_seq)
+LAMBDAs, MUs, VARs, z, PIs = NN(RNA_seq)
 
-print(LAMBDA.size())
-print(z.size())
-print(PI.size())
+prior_zGy, prior_y = (torch.zeros(size=(K, L)), torch.ones(size=(K, L))), torch.ones(size=(K,))/K
+gamma_zGy, gamma_y = 1, 1
+
+loss = GMMVAE_loss(prior_zGy, prior_y, gamma_zGy, gamma_y)
+
+loss(RNA_seq, LAMBDAs, MUs, VARs, PIs)
