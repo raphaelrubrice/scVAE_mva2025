@@ -8,16 +8,16 @@ class GMMVAE_loss(torch.nn.Module):
         - Ajouter un warm-up
     """
 
-    def __init__(self, prior_zGy_mu, prior_zGy_var, prior_y, gamma_zGy, gamma_y):
+    def __init__(self, prior_zGy_mu: torch.Tensor, prior_zGy_var: torch.Tensor, prior_y: torch.Tensor, gamma_zGy: float, gamma_y: float, x_law: str):
         """
         Initialisation de la loss:
             - prior_zGy_mu (torch.Tensor) = Tenseur contenant les à priori µ sur chaque dimension sachant y.
             - prior_zGy_var (torch.Tensor) = Tenseur contenant les à priori s² sur chaque dimension sachant y.
-            - prior_y (torch.Tensor) = Tenseur contenant les à priori pi.
+            - prior_y (torch.Tensor) = Tenseur contenant les à priori pi **en log**.
             - gamma_zGy (float) = Coefficient de pondération pour la KL de z.
             - gamma_y (float) = Coefficient de pondération pour la KL de y.
+            - x_law (str) = La loi de probabilité de x, sert au calcul des paramètres de x.
 
-            
         dim(prior_zGy_mu) = (K, L).
         dim(prior_zGy_var) = (K, L).
         dim(prior_y) = (K).
@@ -31,7 +31,7 @@ class GMMVAE_loss(torch.nn.Module):
 
         super(GMMVAE_loss, self).__init__()
 
-        self.prior_zGy_mu, self.prior_zGy_var, self.prior_y, self.gamma_zGy, self.gamma_y = prior_zGy_mu, prior_zGy_var, prior_y, gamma_zGy, gamma_y
+        self.prior_zGy_mu, self.prior_zGy_var, self.prior_y, self.gamma_zGy, self.gamma_y, self.x_law = prior_zGy_mu, prior_zGy_var, prior_y, gamma_zGy, gamma_y, x_law
 
     
     def forward(self, x, LAMBDAs, MUs, VARs, PIs):
@@ -60,14 +60,17 @@ class GMMVAE_loss(torch.nn.Module):
             - K: Le nombre de clusters.
             - L: La dimension de la variable latente.
         """
-        log_xGz = torch.sum(LAMBDAs - x[:, None, :, :]*torch.log(LAMBDAs + 1e-10), dim=-1)
+        if self.x_law in ["P"]:
+            # -log probabilité d'un loi de Poisson.
+            log_xGz = torch.sum(LAMBDAs - x[:, None, :, :]*torch.log(LAMBDAs + 1e-10), dim=-1)
 
+        # KL entre deux distributions sous log.
         KL_y = torch.nn.functional.kl_div(input=self.prior_y, target=PIs, log_target=True, reduction="batchmean")
         
+        # KL entre deux lois normales. (cf formule)
         KL_z = (1/2)*(
             (VARs/(self.prior_zGy_var[:, None, :] + 1e-10)) + (torch.pow((self.prior_zGy_mu[:, None, :] - MUs), 2)/(self.prior_zGy_var[:, None, :] + 1e-10)) - 1 + 2*torch.log((self.prior_zGy_var[:, None, :]/(VARs + + 1e-10)) + 1e-10)
             )
-
         KL_z = torch.sum(KL_z, dim=-1)
         
         return torch.mean(torch.sum((log_xGz + self.gamma_zGy*KL_z), dim=1)) + self.gamma_y*KL_y

@@ -19,10 +19,6 @@ class GMMVAE(torch.nn.Module):
             - L (int) = La dimension la variable latente.
             - K (int) = Le nombre de classe à apprendre pour la GMM.
             - x_law (str) = La loi de probabilité de x, sert au calcul des paramètres de x.
-
-        A changer:
-            - Peut être que plutôt que demander la loi de x, demander le nombre de paramètres nécessaire au calcul de x.
-    
         """
         super(GMMVAE, self).__init__()
 
@@ -46,11 +42,12 @@ class GMMVAE(torch.nn.Module):
             torch.nn.LogSoftmax(dim=-1)
         )
 
-        # Prend z dépendant de y et calcul lambdas, permet d'avoir p(x | z).
-        self.f_x_parameters = torch.nn.Sequential(
-            torch.nn.Linear(in_features=L, out_features=M),
-            torch.nn.ReLU(inplace=False)
-        )
+        if x_law in ["P"]:
+            # Prend z dépendant de y et calcul lambdas, permet d'avoir p(x | z).
+            self.f_x_parameters = torch.nn.Sequential(
+                torch.nn.Linear(in_features=L, out_features=M),
+                torch.nn.ReLU(inplace=False)
+            )
 
         # Finalement on obtient ~ p(x | z).p(z | y).p(y) pour chaque y et chaque z.
 
@@ -66,7 +63,7 @@ class GMMVAE(torch.nn.Module):
             - MUs (torch.Tensor) = Les paramètres µ de la loi normale pour chaque z conditionnées par y et x. = q(z | x, y) ~ p(z | y)
             - VARs (torch.Tensor) = Les paramètres s² de la loi normale pour chaque z conditionnées par y et x. = q(z | x, y) ~ p(z | y)
             - z (torch.Tensor) = Les variables latentes samplées par la reparamétrization trick.
-            - PIs (torch.Tensor) = Les paramètres s² de la loi multinomiale de y conditionnées par x. = q(y | x) ~ p(y)
+            - PIs (torch.Tensor) = Les paramètres pi **en log** de la loi multinomiale de y conditionnées par x. = log(q(y | x)) ~ log(p(y))
         
         dim(x) = (B, N, M)
         dim(y) = (K)
@@ -98,8 +95,9 @@ class GMMVAE(torch.nn.Module):
         # reparamétrization trick, rend le sampling différentiable.
         z = MUs + torch.sqrt(VARs)*epsilon
 
-        # projection et non-linéarité pour le calcul des paramètres.
-        LAMBDAs = self.f_x_parameters(z)
+        if self.x_law in ["P"]:
+            # projection et non-linéarité pour le calcul des paramètres.
+            LAMBDAs = self.f_x_parameters(z)
 
         return LAMBDAs, MUs, VARs, z, PIs
 
@@ -114,6 +112,6 @@ LAMBDAs, MUs, VARs, z, PIs = NN(RNA_seq)
 prior_zGy_mu, prior_zGy_var , prior_y = torch.zeros(size=(K, L)), torch.ones(size=(K, L)), torch.log_softmax(torch.ones(size=(K,))/K, dim=0)
 gamma_zGy, gamma_y = 1, 1
 
-loss = GMMVAE_loss(prior_zGy_mu, prior_zGy_var, prior_y, gamma_zGy, gamma_y)
+loss = GMMVAE_loss(prior_zGy_mu, prior_zGy_var, prior_y, gamma_zGy, gamma_y, "P")
 
 print(loss(RNA_seq, LAMBDAs, MUs, VARs, PIs))
