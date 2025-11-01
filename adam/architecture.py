@@ -128,7 +128,7 @@ class GMMVAE(torch.nn.Module):
         """
 
         # concaténe un vecteur booléen pour chaque x, ie [B, K, N, M+K] avec [0, 0, ..., 1, ..., 0] un 1 à la position k pour tout k=1...K.
-        x_concat_y = torch.concat([torch.concat([x[:, None, :, :], y.view(1, 1, K).expand(x.shape[0], self.N, self.K)[:, None, :, :]], dim=-1) for y in torch.eye(self.K)], dim=1)
+        x_concat_y = torch.concat([torch.concat([x[:, None, :, :], y.view(1, 1, self.K).expand(x.shape[0], self.N, self.K)[:, None, :, :]], dim=-1) for y in torch.eye(self.K)], dim=1)
         
         # bruit gaussien sur chaque dimension, pour chaque exemple, pour chaque classe et sur chaque batch.
         epsilon = torch.randn(x.shape[0], self.K, self.N, self.L)
@@ -143,18 +143,3 @@ class GMMVAE(torch.nn.Module):
         x_parameters = self.f_x_parameters(z)
 
         return x_parameters, MUs, VARs, z, PIs
-
-
-B, N, M, L, K = 5, 100, 200, 10, 7
-RNA_seq = torch.randint(low=0, high=1000, size=(B, N, M), dtype=torch.float)
-
-NN = GMMVAE(N=N, M=M, L=L, K=K, x_law="ZIP")
-
-x_parameters, MUs, VARs, z, PIs = NN(RNA_seq)
-
-prior_zGy_mu, prior_zGy_var , prior_y = torch.zeros(size=(K, L)), torch.ones(size=(K, L)), torch.log_softmax(torch.ones(size=(K,))/K, dim=0)
-gamma_zGy, gamma_y = 1, 1
-
-loss = GMMVAE_loss(prior_zGy_mu, prior_zGy_var, prior_y, gamma_zGy, gamma_y, "ZIP")
-
-print(loss(RNA_seq, x_parameters, MUs, VARs, PIs))
