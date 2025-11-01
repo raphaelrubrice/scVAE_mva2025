@@ -2,6 +2,41 @@ import torch
 from my_loss import GMMVAE_loss
 
 
+class ZIP_parameters(torch.nn.Module):
+    """
+    Double couches non-linéaires pour calculer les paramètres lambda et p d'une loi zero-inflated-Poisson. 
+    """
+
+    def __init__(self, L: int, M: int) -> None:
+        """
+        Initialisation des couches:
+            - M (int) = Le nombre de dimension d'un point.
+            - L (int) = La dimension la variable latente.
+        """
+        super(ZIP_parameters, self).__init__()
+
+        self.nn_lambdas = torch.nn.Sequential(
+            torch.nn.Linear(L, M),
+            torch.nn.ReLU(inplace=False)
+        )
+
+        self.nn_p = torch.nn.Sequential(
+            torch.nn.Linear(L, M),
+            torch.nn.Sigmoid()
+        )
+
+        return None
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor]:
+        """
+        Forward permettant le calcul des paramètres pour la ZIP.
+
+        return:
+            - (2, B, K, N, M): Respectivement les lambdas et p pour chaque dimensions et chaque x.
+        """
+        return self.nn_lambdas(x), self.nn_p(x)
+    
+
 class GMMVAE(torch.nn.Module):
     """
     A faire:
@@ -19,6 +54,9 @@ class GMMVAE(torch.nn.Module):
             - L (int) = La dimension la variable latente.
             - K (int) = Le nombre de classe à apprendre pour la GMM.
             - x_law (str) = La loi de probabilité de x, sert au calcul des paramètres de x.
+
+        return:
+            - None.
         """
         super(GMMVAE, self).__init__()
 
@@ -42,12 +80,16 @@ class GMMVAE(torch.nn.Module):
             torch.nn.LogSoftmax(dim=-1)
         )
 
-        if x_law in ["P"]:
-            # Prend z dépendant de y et calcul lambdas, permet d'avoir p(x | z).
+        if x_law == "P":
+            # Prend z dépendant de y et calcule (lambdas), permet d'avoir p(x | z).
             self.f_x_parameters = torch.nn.Sequential(
                 torch.nn.Linear(in_features=L, out_features=M),
                 torch.nn.ReLU(inplace=False)
             )
+
+        if x_law == "ZIP":
+            # Prend z dépendant de y et calcule (lambdas et p), permet d'avoir p(x | z).
+            self.f_x_parameters = ZIP_parameters(L, M)
 
         # Finalement on obtient ~ p(x | z).p(z | y).p(y) pour chaque y et chaque z.
 
@@ -59,7 +101,7 @@ class GMMVAE(torch.nn.Module):
             - x (torch.Tensor) = données sous forme de batch.
         
         return:
-            - LAMBDAs (torch.Tensor) = Les paramètres de Poisson pour chaque exemple conditionnées par z = p(x | z)
+            - x_parameters (torch.Tensor) = Les paramètres de la loi de x pour chaque exemple conditionnées par z = p(x | z)
             - MUs (torch.Tensor) = Les paramètres µ de la loi normale pour chaque z conditionnées par y et x. = q(z | x, y) ~ p(z | y)
             - VARs (torch.Tensor) = Les paramètres s² de la loi normale pour chaque z conditionnées par y et x. = q(z | x, y) ~ p(z | y)
             - z (torch.Tensor) = Les variables latentes samplées par la reparamétrization trick.
@@ -73,6 +115,8 @@ class GMMVAE(torch.nn.Module):
         dim(VARs) = (B, K, N, L)
         dim(z) = (B, K, N, L)
         dim(LAMBDAs) = (B, K, N, M)
+        dim(P) = (B, K, N, M)
+        dim(x_parameters) = (P, B, K, N, M)
 
         Avec:
             - B: Le nombre de batch.
@@ -80,6 +124,7 @@ class GMMVAE(torch.nn.Module):
             - M: La taille des exemples.
             - K: Le nombre de clusters.
             - L: La dimension de la variable latente.
+            - P: Le nombre de paramètres par point.
         """
 
         # concaténe un vecteur booléen pour chaque x, ie [B, K, N, M+K] avec [0, 0, ..., 1, ..., 0] un 1 à la position k pour tout k=1...K.
@@ -95,23 +140,21 @@ class GMMVAE(torch.nn.Module):
         # reparamétrization trick, rend le sampling différentiable.
         z = MUs + torch.sqrt(VARs)*epsilon
 
-        if self.x_law in ["P"]:
-            # projection et non-linéarité pour le calcul des paramètres.
-            LAMBDAs = self.f_x_parameters(z)
+        x_parameters = self.f_x_parameters(z)
 
-        return LAMBDAs, MUs, VARs, z, PIs
+        return x_parameters, MUs, VARs, z, PIs
 
 
 B, N, M, L, K = 5, 100, 200, 10, 7
 RNA_seq = torch.randint(low=0, high=1000, size=(B, N, M), dtype=torch.float)
 
-NN = GMMVAE(N=N, M=M, L=L, K=K, x_law="P")
+NN = GMMVAE(N=N, M=M, L=L, K=K, x_law="ZIP")
 
-LAMBDAs, MUs, VARs, z, PIs = NN(RNA_seq)
+x_parameters, MUs, VARs, z, PIs = NN(RNA_seq)
 
 prior_zGy_mu, prior_zGy_var , prior_y = torch.zeros(size=(K, L)), torch.ones(size=(K, L)), torch.log_softmax(torch.ones(size=(K,))/K, dim=0)
 gamma_zGy, gamma_y = 1, 1
 
-loss = GMMVAE_loss(prior_zGy_mu, prior_zGy_var, prior_y, gamma_zGy, gamma_y, "P")
+loss = GMMVAE_loss(prior_zGy_mu, prior_zGy_var, prior_y, gamma_zGy, gamma_y, "ZIP")
 
-print(loss(RNA_seq, LAMBDAs, MUs, VARs, PIs))
+print(loss(RNA_seq, x_parameters, MUs, VARs, PIs))
