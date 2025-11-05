@@ -12,7 +12,7 @@ Let's use the modern package management system for python called [uv](https://gi
 git clone https://github.com/blackswan-advitamaeternam/HVAE.git
 ```
 
-3) Go to the current repo (HVAE) and create a virtual environment
+3) Go to the current repo (scVAE_mva2025) and create a virtual environment
 ```bash
 cd HVAE/
 uv venv
