@@ -1,4 +1,4 @@
-# VAE for singlee cell data
+# Variational Auto-Encoders for single cell data
 Github for the project on VAEs for single cell data for the "Introduction to Probabilistic Graphical Models and Deep Generative Models" course of the MVA.
 We primarily focused on the scVAE paper.
 
@@ -9,7 +9,7 @@ Let's use the modern package management system for python called [uv](https://gi
 
 2) Clone the repo
 ```bash
-git clone https://github.com/blackswan-advitamaeternam/HVAE.git
+git clone https://github.com/raphaelrubrice/scVAE_mva2025.git
 ```
 
 3) Go to the current repo (scVAE_mva2025) and create a virtual environment
