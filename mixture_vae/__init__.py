@@ -1,0 +1,1 @@
+"""Module to define Mixture-based Variational Auto-Encoders"""
