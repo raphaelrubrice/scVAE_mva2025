@@ -70,7 +70,7 @@ def format_loss(val_epoch_parts, beta_kl):
 
     kl_cluster_str = f"{kl_cluster:.4f}"
 
-    return f"{recon_str} - {beta_kl:.4f} * ({kl_latent_str} + ({kl_cluster_str}))"
+    return f"{recon_str} - {beta_kl} * ({kl_latent_str} + ({kl_cluster_str}))"
    
 def training_mvae(dataloader: torch.utils.data.DataLoader,
                   val_dataloader:torch.utils.data.DataLoader,
@@ -229,7 +229,6 @@ if __name__ == "__main__":
         input_dim=input_dim,
         hidden_dim=hidden_dim,
         n_components=n_components,
-        latent_dim=latent_dim,
         n_layers=1,
         prior_latent=prior_latent,
         prior_input=prior_input,

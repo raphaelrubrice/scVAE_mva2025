@@ -74,7 +74,6 @@ class MixtureVAE(nn.Module):
                  input_dim: int, 
                  hidden_dim: int, 
                  n_components: int,
-                 latent_dim: int,
                  n_layers: int,
                  prior_latent: Distribution, # Normal
                  prior_input: Distribution, # Negative Binomial
@@ -88,7 +87,6 @@ class MixtureVAE(nn.Module):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.n_components = n_components
-        self.latent_dim = latent_dim
         self.n_layers = n_layers
         self.act_func = act_func
         self.dropout = dropout
@@ -111,28 +109,47 @@ class MixtureVAE(nn.Module):
         
         # Modules to approximate q(z|x,y) = Latent modules
         # parameter constraints (if any) are enforced during forward pass
-        self.encoder_output_dim = self.latent_dim * self.posterior_latent.n_params
-        self.encoder = BaseBlock(input_dim=self.input_dim + self.n_components,
+        # One module for each distribution parameter
+        self.encoder = nn.ModuleList()
+        for param_dim in self.posterior_latent.param_dims:
+            param_encoder = BaseBlock(input_dim=self.input_dim + self.n_components,
                                     hidden_dim=self.hidden_dim,
-                                    output_dim=self.encoder_output_dim,
+                                    output_dim=param_dim,
                                     n_layers=self.n_layers,
                                     act_func=self.act_func,
                                     dropout=self.dropout,
                                     norm_layer=self.norm_layer)
-        
+            self.encoder.append(param_encoder)
+        self.latent_dim = self.posterior_latent.sample_dim
+
         # Modules to learn p(x|z) = Generation modules
         # ATTENTION: in scVAE we dont reconstruct the input directly, we 
         # output the parameters of the distribution it is supposed to follow
         # parameter constraints (if any) are enforced during forward pass
-        self.decoder_output_dim = self.input_dim * self.prior_input.n_params
-        self.decoder = BaseBlock(input_dim=self.latent_dim,
+        # One module for each distribution parameter
+        self.decoder = nn.ModuleList()
+        for param_dim in self.prior_input.param_dims:
+            param_encoder = BaseBlock(input_dim=self.latent_dim,
                                     hidden_dim=self.hidden_dim,
-                                    output_dim=self.decoder_output_dim,
+                                    output_dim=param_dim,
                                     n_layers=self.n_layers,
                                     act_func=self.act_func,
                                     dropout=self.dropout,
                                     norm_layer=self.norm_layer)
-        
+            self.decoder.append(param_encoder)
+    
+    def compute_encoding_params(self, x):
+        tensor_list = []
+        for param_encoder in self.encoder:
+            tensor_list.append(param_encoder(x))
+        return torch.cat(tensor_list, dim=1)
+    
+    def compute_decoding_params(self, x):
+        tensor_list = []
+        for param_decoder in self.decoder:
+            tensor_list.append(param_decoder(x))
+        return torch.cat(tensor_list, dim=1)
+    
     def encode(self, x):
         # B x n_components
         cluster_probas = self.clustering_block(x)
@@ -151,7 +168,7 @@ class MixtureVAE(nn.Module):
             enc_in = torch.cat([x, c_k], dim=1) # B x (input_dim + n_components)
 
             # get latent dist parameters
-            latent_k = self.posterior_latent.constraints(self.encoder(enc_in))
+            latent_k = self.posterior_latent.constraints(self.compute_encoding_params(enc_in))
             all_latent.append(latent_k) # params for q_k(z|x,c=k)
 
             # sample 1 time for each sample in the batch
@@ -170,7 +187,7 @@ class MixtureVAE(nn.Module):
 
     
     def decode(self, z):
-        input_params = self.decoder(z)
+        input_params = self.compute_decoding_params(z)
         # enforce constraints on params (required for some distributions)
         input_params = self.prior_input.constraints(input_params)
         return input_params
