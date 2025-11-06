@@ -4,6 +4,7 @@ from my_loss import GMMVAE_loss
 
 class ZIP_parameters(torch.nn.Module):
     """
+    git
     Double couches non-linéaires pour calculer les paramètres lambda et p d'une loi zero-inflated-Poisson. 
     """
 
