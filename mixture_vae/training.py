@@ -9,6 +9,7 @@ if path_to_repo not in sys.path:
     sys.path.append(path_to_repo)
 
 from mixture_vae.mvae import MixtureVAE, elbo_mixture_step
+from mixture_vae.viz import plot_loss_components
 
 class EarlyStopping(object):
     """
@@ -161,9 +162,9 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
         losses["train"].append(epoch_loss)
         losses["val"].append(val_epoch_loss)
         for key in all_parts["train"].keys():
-            all_parts["train"][key].append(epoch_parts[key])
+            all_parts["train"][key].append(np.mean(epoch_parts[key]))
         for key in all_parts["val"].keys():
-            all_parts["val"][key].append(val_epoch_parts[key])
+            all_parts["val"][key].append(np.mean(val_epoch_parts[key]))
 
         if epoch == 1:
             print("Loss printing format:\nepoch x: val = loss (-recon - beta_kl * (kl_latent + kl_cluster)) | train = loss (-recon - beta_kl * (kl_latent + kl_cluster))\n")
@@ -181,18 +182,18 @@ if __name__ == "__main__":
     from mixture_vae.distributions import NormalDistribution, UniformDistribution, NegativeBinomial
     
     # Train Toy data
-    X = torch.randint(0,50, (1000,5), dtype=torch.float)  # count data, 100 samples, 5 features
+    X = torch.randint(0,50, (5000,5), dtype=torch.float)  # count data, 100 samples, 5 features
     dataset = TensorDataset(X)
-    dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
 
     # Val Toy data
-    X_val = torch.randint(0,50, (300,5), dtype=torch.float)  # count data, 100 samples, 5 features
+    X_val = torch.randint(0,50, (500,5), dtype=torch.float)  # count data, 100 samples, 5 features
     val_dataset = TensorDataset(X_val)
-    val_dataloader = DataLoader(val_dataset, batch_size=16, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=64, shuffle=True)
     
     # Problem setup
     input_dim = 5 # 5 genes
-    hidden_dim = 8 # 8 hidden neurons per layer
+    hidden_dim = 16 # 8 hidden neurons per layer
     n_components = 3 # 3 clusters are assumed
     latent_dim = 2 # 2 dimension latent space
     
@@ -208,7 +209,7 @@ if __name__ == "__main__":
     prior_input = NegativeBinomial({"p":p,
                                     "r":r})
 
-    # Prior on cluster repartitions: Assume balanced 
+    # Prior on cluster repartitions (mixture): Assume balanced 
     # cluster classes = Uniform on [0,1]
     a = torch.zeros((1,n_components))
     b = torch.ones((1,n_components))
@@ -236,17 +237,25 @@ if __name__ == "__main__":
         posterior_latent=posterior_latent
     )
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+    EPOCHS = 50
+    BETA_KL = 0.5
+    PATIENCE = 5
 
     trained_model, losses, parts = training_mvae(
         dataloader,
         val_dataloader,
         model,
         optimizer,
-        epochs=20,
-        beta_kl=0.1,
-        patience=3,
-        show_loss_every=1
+        epochs=EPOCHS,
+        beta_kl=BETA_KL,
+        patience=PATIENCE,
+        show_loss_every=5
     )
 
-    print("Loss history:", losses)
+    plot_loss_components(parts["train"], 
+                         parts["val"], 
+                         BETA_KL, 
+                         title="Train Loss Breakdown",
+                         save_path="./toy_losses.pdf")

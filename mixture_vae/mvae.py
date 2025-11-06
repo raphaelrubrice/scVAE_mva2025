@@ -249,7 +249,7 @@ def elbo_mixture_step(model, x, beta_kl=1.0):
     kl_z = (cluster_probas * kl_per_k).sum(dim=1).mean()               # scalar
 
     # 3) Cluster KL: KL(π(x) || p(c))
-    ref = model.prior_categorical.get_ref_proba()          # scalar or [K]
+    ref = model.prior_categorical.get_ref_proba() # scalar or [K]
     ref = ref.to(cluster_probas.device)
     ref = ref.expand_as(cluster_probas) if ref.ndim == 1 else ref
     kl_pi = (cluster_probas * (cluster_probas.clamp_min(1e-12).log() - ref.clamp_min(1e-12).log())).sum(dim=1).mean()
