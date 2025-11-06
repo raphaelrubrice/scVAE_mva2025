@@ -47,7 +47,30 @@ class EarlyStopping(object):
         if self.patience_count >= self.patience:
             return True
         return False
-    
+
+def format_loss(val_epoch_parts, beta_kl):
+    """
+    print the loss components in the form:
+    -recon - beta_kl * (kl_latent + kl_cluster)
+    while handling signs cleanly (no '--' or '+ -').
+    """
+    recon = val_epoch_parts["recon"][-1]
+    kl_latent = val_epoch_parts["kl_latent"][-1]
+    kl_cluster = val_epoch_parts["kl_cluster"][-1]
+
+    # Recon is always shown as subtraction
+    # the loss is - recon
+    if recon >= 0:
+        recon_str = f"- {recon:.4f}"
+    else:
+        recon_str = f"{-recon:.4f}"
+
+    kl_latent_str = f"{kl_latent:.4f}"
+
+    kl_cluster_str = f"{kl_cluster:.4f}"
+
+    return f"{recon_str} - {beta_kl:.4f} * ({kl_latent_str} + ({kl_cluster_str}))"
+   
 def training_mvae(dataloader: torch.utils.data.DataLoader,
                   val_dataloader:torch.utils.data.DataLoader,
                   model: MixtureVAE, 
@@ -71,7 +94,7 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
                 "val":{"recon":[],
                         "kl_latent":[],
                         "kl_cluster":[]}}
-    for epoch in range(epochs):
+    for epoch in range(1,epochs+1):
         # TRAINING
         epoch_loss = 0
         epoch_parts = {"recon":[],
@@ -98,7 +121,7 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
         epoch_loss = epoch_loss / len(dataloader)
         # register average of epoch parts
         for key in epoch_parts.keys():
-            epoch_parts[key] = np.mean(epoch_parts[key])
+            epoch_parts[key].append(np.mean(epoch_parts[key]))
         
         # VALIDATION
         val_epoch_loss = 0
@@ -108,19 +131,17 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
         with torch.no_grad():
             for batch in val_dataloader:
                 x = batch[0]
-
                 loss, parts = elbo_mixture_step(model, 
                                                 x, 
                                                 beta_kl=beta_kl)
-
                 val_epoch_loss += loss.item()
-                for key in epoch_parts.keys():
+                for key in val_epoch_parts.keys():
                     val_epoch_parts[key].append(parts[key])
             # register average epoch loss
             val_epoch_loss = val_epoch_loss / len(val_dataloader)
             # register average of epoch parts
             for key in val_epoch_parts.keys():
-                val_epoch_parts[key] = np.mean(val_epoch_parts[key])
+                val_epoch_parts[key].append(np.mean(val_epoch_parts[key]))
         
         # check early stoppage
         if early_stopper.check_stop(model, val_epoch_loss):
@@ -138,14 +159,16 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
             return early_stopper.best_model, losses, all_parts
         
         losses["train"].append(epoch_loss)
-        losses["val"].append(epoch_loss)
+        losses["val"].append(val_epoch_loss)
         for key in all_parts["train"].keys():
             all_parts["train"][key].append(epoch_parts[key])
         for key in all_parts["val"].keys():
             all_parts["val"][key].append(val_epoch_parts[key])
 
+        if epoch == 1:
+            print("Loss printing format:\nepoch x: val = loss (-recon - beta_kl * (kl_latent + kl_cluster)) | train = loss (-recon - beta_kl * (kl_latent + kl_cluster))\n")
         if epoch % show_loss_every == 0:
-            print(f"epoch {epoch}: val = {losses["val"][-1]:.4f} | train = {losses["train"][-1]:.4f}")
+            print(f"epoch {epoch}: val = {losses["val"][-1]:.4f} ({format_loss(val_epoch_parts, beta_kl)}) | train = {losses["train"][-1]:.4f} ({format_loss(epoch_parts, beta_kl)})")
     return model, losses, all_parts
 
 if __name__ == "__main__":
@@ -164,12 +187,12 @@ if __name__ == "__main__":
 
     # Val Toy data
     X_val = torch.randint(0,50, (300,5), dtype=torch.float)  # count data, 100 samples, 5 features
-    val_dataset = TensorDataset(X)
+    val_dataset = TensorDataset(X_val)
     val_dataloader = DataLoader(val_dataset, batch_size=16, shuffle=True)
     
     # Problem setup
     input_dim = 5 # 5 genes
-    hidden_dim = 16 # 8 hidden neurons per layer
+    hidden_dim = 8 # 8 hidden neurons per layer
     n_components = 3 # 3 clusters are assumed
     latent_dim = 2 # 2 dimension latent space
     
@@ -220,7 +243,7 @@ if __name__ == "__main__":
         val_dataloader,
         model,
         optimizer,
-        epochs=5,
+        epochs=20,
         beta_kl=0.1,
         patience=3,
         show_loss_every=1
