@@ -90,7 +90,9 @@ class UniformDistribution(Distribution):
     def get_ref_proba(self):
         a = self.ref_parameters["a"]
         b = self.ref_parameters["b"]
-        return 1 / (b - a + 1e-8)
+        d = self.param_dims[0] # necessarily >= 1
+        support_proba = 1 / (b - a + 1e-6)
+        return support_proba / d # to normalize across dimensions (the sum of probas across dims need to be 1)
     
     def sample(self, latent_params, batch_size):
         a, b = split_or_validate_features(latent_params, 
@@ -112,7 +114,7 @@ class UniformDistribution(Distribution):
     
     def log_likelihood(self, x, params):
         a, b = split_or_validate_features(params, self.param_dims)
-        eps = 1e-8
+        eps = 1e-6
 
         # normalize dtypes
         x = x.double()
@@ -140,7 +142,7 @@ class UniformDistribution(Distribution):
                                                 self.param_dims)
         tg_a, tg_b = split_or_validate_features(target_params, 
                                                 self.param_dims)
-        eps = 1e-8
+        eps = 1e-6
 
         in_a = in_a.double()
         in_b = in_b.double()
@@ -198,7 +200,7 @@ class NormalDistribution(Distribution):
     def log_likelihood(self, x, params):
         mu, std = split_or_validate_features(params, 
                                              self.param_dims)
-        eps = 1e-8
+        eps = 1e-6
 
         mu = mu.double(); std = std.double(); x = x.double()
         var = (std**2).clamp_min(eps)
@@ -216,7 +218,7 @@ class NormalDistribution(Distribution):
     def kl_divergence(self, input_params, target_params):
         mu0, std0 = split_or_validate_features(input_params, self.param_dims)   # p
         mu1, std1 = split_or_validate_features(target_params, self.param_dims)  # q
-        eps = 1e-8
+        eps = 1e-6
 
         mu0 = mu0.double(); std0 = std0.double()
         mu1 = mu1.double(); std1 = std1.double()
@@ -247,7 +249,7 @@ class NegativeBinomial(Distribution):
         r_dims = self.param_dims[1]
         logits_dims = self.param_dims[0]
         start, end = logits_dims, r_dims + logits_dims
-        constrained[:,start:end] = F.softplus(params[:,start:end]) + 1e-4
+        constrained[:,start:end] = F.softplus(params[:,start:end]) + 1e-6
         return constrained
     
     def sample(self, latent_params, batch_size):
@@ -282,9 +284,10 @@ class Poisson(Distribution):
         self.n_params = 1 # lambda
 
     def constraints(self, params):
+        params = params.double()
         constrained = params.clone()
-        # ensure probability on lambda !
-        constrained[:,0] = F.softmax(params[:,0], dim=0)
+        # ensure > 0 on lambda
+        constrained[:,0] = F.softplus(params[:,0]) + 1e-6
         return constrained
     
     def sample(self, latent_params, batch_size):

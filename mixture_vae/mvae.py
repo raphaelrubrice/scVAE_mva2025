@@ -13,6 +13,7 @@ class BaseBlock(nn.Module):
                  output_dim: int,
                  n_layers: int = 2,
                  act_func: callable = nn.ReLU(),
+                 final_act_func: callable = None,
                  dropout: float = 0.0,
                  norm_layer: callable = nn.BatchNorm1d):
         super().__init__()
@@ -21,6 +22,7 @@ class BaseBlock(nn.Module):
         self.output_dim = output_dim
         self.n_layers = n_layers
         self.act_func = act_func
+        self.final_act_func = self.act_func if final_act_func is None else final_act_func
         self.dropout = dropout
         self.norm_layer = norm_layer
 
@@ -40,7 +42,7 @@ class BaseBlock(nn.Module):
                                     self.norm_layer(self.hidden_dim))
             elif i == self.n_layers:
                 module = nn.Sequential(nn.Linear(self.hidden_dim, self.output_dim),
-                                        self.act_func)
+                                        self.final_act_func)
             else:
                 if self.dropout > 0:
                     module = nn.Sequential(nn.Linear(self.hidden_dim, self.hidden_dim),
@@ -103,10 +105,12 @@ class MixtureVAE(nn.Module):
                                            output_dim=self.n_components,
                                            n_layers=self.n_layers,
                                            act_func=self.act_func,
+                                           final_act_func=nn.Softmax(), # probabilities
                                            dropout=self.dropout,
                                            norm_layer=self.norm_layer)
         
         # Modules to approximate q(z|x,y) = Latent modules
+        # parameter constraints (if any) are enforced during forward pass
         self.encoder_output_dim = self.latent_dim * self.posterior_latent.n_params
         self.encoder = BaseBlock(input_dim=self.input_dim + self.n_components,
                                     hidden_dim=self.hidden_dim,
@@ -119,6 +123,7 @@ class MixtureVAE(nn.Module):
         # Modules to learn p(x|z) = Generation modules
         # ATTENTION: in scVAE we dont reconstruct the input directly, we 
         # output the parameters of the distribution it is supposed to follow
+        # parameter constraints (if any) are enforced during forward pass
         self.decoder_output_dim = self.input_dim * self.prior_input.n_params
         self.decoder = BaseBlock(input_dim=self.latent_dim,
                                     hidden_dim=self.hidden_dim,
@@ -202,7 +207,7 @@ class MixtureVAE(nn.Module):
             log_q = self.posterior_latent.log_likelihood(z, learned_params)
             log_p = self.prior_latent.log_likelihood(z, prior_params)
             # (average outside)
-            return (log_q - log_p)
+            return (log_q - log_p) # because kl loss = Eq[log q_z/p_z] and the average is done outside
         
 def elbo_mixture_step(model, x, beta_kl=1.0):
     # Forward (keeps all component samples)
@@ -244,7 +249,7 @@ def elbo_mixture_step(model, x, beta_kl=1.0):
     kl_z = (cluster_probas * kl_per_k).sum(dim=1).mean()               # scalar
 
     # 3) Cluster KL: KL(π(x) || p(c))
-    ref = model.prior_categorical.get_ref_proba()          # scalar or [K]
+    ref = model.prior_categorical.get_ref_proba() # scalar or [K]
     ref = ref.to(cluster_probas.device)
     ref = ref.expand_as(cluster_probas) if ref.ndim == 1 else ref
     kl_pi = (cluster_probas * (cluster_probas.clamp_min(1e-12).log() - ref.clamp_min(1e-12).log())).sum(dim=1).mean()
