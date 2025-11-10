@@ -2,13 +2,14 @@
 import torch
 import numpy as np
 import os, sys
+from tqdm import tqdm
 
 # To ensure the custom package is found
 path_to_repo = "/".join(os.path.abspath(__file__).split("/")[:-2])
 if path_to_repo not in sys.path:
     sys.path.append(path_to_repo)
 
-from mixture_vae.mvae import MixtureVAE, elbo_mixture_step
+from mixture_vae.mvae import MixtureVAE, ind_MoMVAE, elbo_mixture_step, summed_elbo_mixture_step
 from mixture_vae.viz import plot_loss_components
 
 class EarlyStopping(object):
@@ -80,11 +81,12 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
                   beta_kl : float = 1,
                   scheduler: torch.optim.lr_scheduler.LRScheduler = None,
                   patience: int | None = 5,
-                  show_loss_every: int = 10):
+                  show_loss_every: int = 10,
+                  model_type: 0 | 1 | 2 = 0):
     """
     Training protocol for MixtureVAE models.
     """
-    assert isinstance(model, MixtureVAE), f"This training loop is tailored for MixtureVAE modules"
+    assert isinstance(model, MixtureVAE) or isinstance(model, ind_MoMVAE), f"This training loop is tailored for MixtureVAE or ind_MoMVAE modules"
     # instantiate early stopper
     early_stopper = EarlyStopping(patience) if patience is not None else None
 
@@ -95,7 +97,7 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
                 "val":{"recon":[],
                         "kl_latent":[],
                         "kl_cluster":[]}}
-    for epoch in range(1,epochs+1):
+    for epoch in tqdm(range(1,epochs+1), desc="TRAINING"):
         # TRAINING
         epoch_loss = 0
         epoch_parts = {"recon":[],
@@ -105,9 +107,13 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
             x = batch[0]
             optimizer.zero_grad()
 
-            loss, parts = elbo_mixture_step(model, 
+            if model_type == 0:
+                loss, parts = elbo_mixture_step(model, 
                                             x, 
                                             beta_kl=beta_kl)
+            
+            elif model_type == 1:
+                loss, parts = summed_elbo_mixture_step(model, x)
             
             loss.backward()
 
@@ -132,9 +138,14 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
         with torch.no_grad():
             for batch in val_dataloader:
                 x = batch[0]
-                loss, parts = elbo_mixture_step(model, 
-                                                x, 
-                                                beta_kl=beta_kl)
+                if model_type == 0:
+                    loss, parts = elbo_mixture_step(model, 
+                                            x, 
+                                            beta_kl=beta_kl)
+                
+                elif model_type == 1:
+                    loss, parts = summed_elbo_mixture_step(model, x)
+
                 val_epoch_loss += loss.item()
                 for key in val_epoch_parts.keys():
                     val_epoch_parts[key].append(parts[key])
@@ -180,6 +191,8 @@ if __name__ == "__main__":
     from torch.utils.data import TensorDataset, DataLoader
 
     from mixture_vae.distributions import NormalDistribution, UniformDistribution, NegativeBinomial
+
+    model_type = 1
     
     # Train Toy data
     X = torch.randint(0,50, (5000,5), dtype=torch.float)  # count data, 100 samples, 5 features
@@ -224,17 +237,32 @@ if __name__ == "__main__":
     posterior_latent = NormalDistribution({"mu":mu,
                                            "std":std})
     
-    # Instantiate MixtureVAE
-    model = MixtureVAE(
-        input_dim=input_dim,
-        hidden_dim=hidden_dim,
-        n_components=n_components,
-        n_layers=1,
-        prior_latent=prior_latent,
-        prior_input=prior_input,
-        prior_categorical=prior_categorical,
-        posterior_latent=posterior_latent
-    )
+    if model_type == 0:
+        # Instantiate MixtureVAE
+        model = MixtureVAE(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            n_components=n_components,
+            n_layers=1,
+            prior_latent=prior_latent,
+            prior_input=prior_input,
+            prior_categorical=prior_categorical,
+            posterior_latent=posterior_latent
+        )
+
+    if model_type == 1:
+        # Instatiate ind_MoMVAE
+        model = ind_MoMVAE(
+            PARAMS = [
+            {"input_dim": input_dim,
+            "hidden_dim": h,
+            "n_components": n_components,
+            "n_layers": 1,
+            "prior_latent": prior_latent,
+            "prior_input": prior_input,
+            "prior_categorical": prior_categorical,
+            "posterior_latent": posterior_latent} for h in [1, 2, 4, 8]]
+        )
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
@@ -250,7 +278,8 @@ if __name__ == "__main__":
         epochs=EPOCHS,
         beta_kl=BETA_KL,
         patience=PATIENCE,
-        show_loss_every=5
+        show_loss_every=5,
+        model_type=model_type
     )
 
     plot_loss_components(parts["train"], 
