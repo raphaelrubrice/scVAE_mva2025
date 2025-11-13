@@ -18,7 +18,7 @@ if __name__ == "__main__":
     os.chdir(file_parent)
 
     # Train Toy data
-    n_genes = 500
+    n_genes = 5
     X = torch.randint(0,50, (5000,n_genes), dtype=torch.float)  # count data, 100 samples, 5 features
     dataset = TensorDataset(X)
     dataloader = DataLoader(dataset, batch_size=64, shuffle=False) 
@@ -87,16 +87,20 @@ if __name__ == "__main__":
 
     EPOCHS = 50
     BETA_KL = 0.5
+    WARMUP = None # my experiments showed bad results when using warmup on the MoMix
     PATIENCE = 5
+    TOL = 5e-3
 
-    model, losses, parts, clusters = training_momixvae(
+    model, losses, parts, clusters, all_betas = training_momixvae(
         dataloader,
         val_dataloader,
         model,
         optimizer,
         epochs=EPOCHS,
         beta_kl=BETA_KL,
+        warmup=WARMUP,
         patience=PATIENCE,
+        tol=TOL,
         show_loss_every=1,
         track_clusters=True,
     )
@@ -104,6 +108,6 @@ if __name__ == "__main__":
     # plot training and validation losses
     plot_loss_components(parts["train"], 
                          parts["val"], 
-                         BETA_KL, 
+                         all_betas, 
                          title="Loss Breakdown",
                          save_path="./momix_toy_losses.pdf")

@@ -25,6 +25,12 @@ class EarlyStopping(object):
         self.best_model = None
         self.best_loss_idx = 0
     
+    def reset(self):
+        self.patience_count = 0
+        self.best_loss = torch.inf
+        self.best_model = None
+        self.best_loss_idx = 0
+
     def register(self, model, loss):
         # Keep only patience losses
         if len(self.losses) == self.patience:
@@ -71,14 +77,16 @@ def format_loss(val_epoch_parts, beta_kl):
 
     kl_cluster_str = f"{kl_cluster:.4f}"
 
-    return f"{recon_str} - {beta_kl} * ({kl_latent_str} + ({kl_cluster_str}))"
+    return f"{recon_str} - {beta_kl:.4f} * ({kl_latent_str} + ({kl_cluster_str}))"
    
 def training_mvae(dataloader: torch.utils.data.DataLoader,
                   val_dataloader:torch.utils.data.DataLoader,
                   model: MixtureVAE, 
                   optimizer: torch.optim.Optimizer, 
-                  epochs: int = 50,
+                  epochs: int = 50, 
                   beta_kl : float = 1,
+                  warmup: int | None = None,
+                  min_beta: float = 0.0,
                   scheduler: torch.optim.lr_scheduler.LRScheduler = None,
                   track_clusters: bool = False,
                   patience: int | None = 5,
@@ -88,6 +96,14 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
     Training protocol for MixtureVAE models.
     """
     assert isinstance(model, MixtureVAE), f"This training loop is tailored for MixtureVAE modules"
+    if warmup is not None:
+        beta_range = (min_beta,beta_kl)
+        min_beta_range = min(beta_range)
+        max_beta_range = max(beta_range)
+        assert min_beta_range >= 0 and max_beta_range >= 0, f"Invalid range: Must be positive. but got {beta_range}"
+        all_betas = np.linspace(min_beta_range, max_beta_range, warmup).tolist() + [max_beta_range] * (epochs - warmup)
+    else:
+        all_betas = [beta_kl] * epochs
     # instantiate early stopper
     early_stopper = EarlyStopping(patience, tol) if patience is not None else None
 
@@ -101,6 +117,8 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
     clusters = {"train": [], 
                 "val":[]}
     for epoch in range(1,epochs+1):
+        beta_kl = all_betas[epoch-1]
+
         # TRAINING
         model.train()
         epoch_loss = 0
@@ -161,6 +179,10 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
             # register clusters for all inputs seen in epoch
             val_epoch_clusters = torch.cat(val_epoch_clusters, dim=0)
         
+        # if we are out of the warmup zone, we reset the early stopper
+        if warmup is not None and epoch <= warmup:
+            early_stopper.reset()
+
         # check early stoppage
         if early_stopper.check_stop(model, val_epoch_loss):
             print(f"\nEarly stoppage after {epoch} epochs with patience of {patience}.")
@@ -176,7 +198,7 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
             all_parts["val"] = {key:val[:final_loss_idx] for key, val in all_parts["val"].items()}
             clusters["train"] = clusters["train"][:final_loss_idx]
             clusters["val"] = clusters["val"][:final_loss_idx]
-            return early_stopper.best_model, losses, all_parts, clusters
+            return early_stopper.best_model, losses, all_parts, clusters, all_betas[:final_loss_idx]
         
         losses["train"].append(epoch_loss)
         losses["val"].append(val_epoch_loss)
@@ -190,24 +212,35 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
             print("Loss printing format:\nepoch x: val = loss (-recon - beta_kl * (kl_latent + kl_cluster)) | train = loss (-recon - beta_kl * (kl_latent + kl_cluster))\n")
         if epoch % show_loss_every == 0:
             print(f"epoch {epoch}: val = {losses["val"][-1]:.4f} ({format_loss(val_epoch_parts, beta_kl)}) | train = {losses["train"][-1]:.4f} ({format_loss(epoch_parts, beta_kl)})")
-    return model, losses, all_parts, clusters
+    return model, losses, all_parts, clusters, all_betas
 
 def training_momixvae(dataloader: torch.utils.data.DataLoader,
                   val_dataloader:torch.utils.data.DataLoader,
                   model: MoMixVAE, 
                   optimizer: torch.optim.Optimizer, 
-                  epochs: int = 50,
+                  epochs: int = 50, 
                   beta_kl : float = 1,
+                  warmup: int | None = None,
+                  min_beta: float = 0.0,
                   scheduler: torch.optim.lr_scheduler.LRScheduler = None,
                   track_clusters: bool = False,
                   patience: int | None = 5,
+                  tol: float | None = 0.0,
                   show_loss_every: int = 10):
     """
     Training protocol for MoMixVAE models.
     """
     assert isinstance(model, MoMixVAE), f"This training loop is tailored for MoMixVAE modules"
+    if warmup is not None:
+        beta_range = (min_beta,beta_kl)
+        min_beta_range = min(beta_range)
+        max_beta_range = max(beta_range)
+        assert min_beta_range >= 0 and max_beta_range >= 0, f"Invalid range: Must be positive. but got {beta_range}"
+        all_betas = np.linspace(min_beta_range, max_beta_range, warmup).tolist() + [max_beta_range] * (epochs - warmup)
+    else:
+        all_betas = [beta_kl] * epochs
     # instantiate early stopper
-    early_stopper = EarlyStopping(patience) if patience is not None else None
+    early_stopper = EarlyStopping(patience, tol) if patience is not None else None
 
     losses = {"train":[], "val":[]}
     all_parts = {"train":{"recon":[],
@@ -219,6 +252,8 @@ def training_momixvae(dataloader: torch.utils.data.DataLoader,
     clusters = {"train": [], 
                 "val":[]}
     for epoch in range(1,epochs+1):
+        beta_kl = all_betas[epoch-1]
+
         # TRAINING
         model.train()
         epoch_loss = 0
@@ -279,6 +314,10 @@ def training_momixvae(dataloader: torch.utils.data.DataLoader,
             # register clusters for all inputs seen in epoch
             val_epoch_clusters = torch.cat(val_epoch_clusters, dim=0)
         
+        # if we are out of the warmup zone, we reset the early stopper
+        if warmup is not None and epoch <= warmup:
+            early_stopper.reset()
+
         # check early stoppage
         if early_stopper.check_stop(model, val_epoch_loss):
             print(f"\nEarly stoppage after {epoch} epochs with patience of {patience}.")
@@ -294,7 +333,7 @@ def training_momixvae(dataloader: torch.utils.data.DataLoader,
             all_parts["val"] = {key:val[:final_loss_idx] for key, val in all_parts["val"].items()}
             clusters["train"] = clusters["train"][:final_loss_idx]
             clusters["val"] = clusters["val"][:final_loss_idx]
-            return early_stopper.best_model, losses, all_parts, clusters
+            return early_stopper.best_model, losses, all_parts, clusters, all_betas[:final_loss_idx]
         
         losses["train"].append(epoch_loss)
         losses["val"].append(val_epoch_loss)
@@ -308,7 +347,7 @@ def training_momixvae(dataloader: torch.utils.data.DataLoader,
             print("Loss printing format:\nepoch x: val = loss (-recon - beta_kl * (kl_latent + kl_cluster)) | train = loss (-recon - beta_kl * (kl_latent + kl_cluster))\n")
         if epoch % show_loss_every == 0:
             print(f"epoch {epoch}: val = {losses["val"][-1]:.4f} ({format_loss(val_epoch_parts, beta_kl)}) | train = {losses["train"][-1]:.4f} ({format_loss(epoch_parts, beta_kl)})")
-    return model, losses, all_parts, clusters
+    return model, losses, all_parts, clusters, all_betas
 
 def retrieve_latent(model, dataloader):
     latent_mix_params = []
@@ -412,16 +451,20 @@ if __name__ == "__main__":
 
     EPOCHS = 50
     BETA_KL = 0.5
+    WARMUP_BETA = int(0.2*EPOCHS)
     PATIENCE = 5
+    TOL = 5e-3
 
-    model, losses, parts, clusters = training_mvae(
+    model, losses, parts, clusters, all_betas = training_mvae(
         dataloader,
         val_dataloader,
         model,
         optimizer,
         epochs=EPOCHS,
         beta_kl=BETA_KL,
+        warmup=WARMUP_BETA,
         patience=PATIENCE,
+        tol=TOL,
         show_loss_every=1,
         track_clusters=True,
     )
@@ -429,7 +472,7 @@ if __name__ == "__main__":
     # plot training and validation losses
     plot_loss_components(parts["train"], 
                          parts["val"], 
-                         BETA_KL, 
+                         all_betas, 
                          title="Loss Breakdown",
                          save_path="./toy_losses.pdf")
     
