@@ -15,8 +15,9 @@ class EarlyStopping(object):
     """
     Implementation of early stopping with best epoch tracking
     """
-    def __init__(self, patience):
+    def __init__(self, patience, tol=0.0):
         self.patience = patience
+        self.tol = tol
         self.losses = []
         self.loss_count = 0
         self.patience_count = 0
@@ -34,7 +35,7 @@ class EarlyStopping(object):
         self.loss_count += 1
 
         # check if this is the best loss
-        if loss < self.best_loss:
+        if loss < self.best_loss - self.tol:
             self.best_loss = loss
             self.best_loss_idx = self.loss_count
             self.best_model = model
@@ -81,13 +82,14 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
                   scheduler: torch.optim.lr_scheduler.LRScheduler = None,
                   track_clusters: bool = False,
                   patience: int | None = 5,
+                  tol: float | None = 0.0,
                   show_loss_every: int = 10):
     """
     Training protocol for MixtureVAE models.
     """
     assert isinstance(model, MixtureVAE), f"This training loop is tailored for MixtureVAE modules"
     # instantiate early stopper
-    early_stopper = EarlyStopping(patience) if patience is not None else None
+    early_stopper = EarlyStopping(patience, tol) if patience is not None else None
 
     losses = {"train":[], "val":[]}
     all_parts = {"train":{"recon":[],
@@ -420,7 +422,7 @@ if __name__ == "__main__":
         epochs=EPOCHS,
         beta_kl=BETA_KL,
         patience=PATIENCE,
-        show_loss_every=5,
+        show_loss_every=1,
         track_clusters=True,
     )
 

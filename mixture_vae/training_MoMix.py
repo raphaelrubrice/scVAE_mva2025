@@ -18,19 +18,20 @@ if __name__ == "__main__":
     os.chdir(file_parent)
 
     # Train Toy data
-    X = torch.randint(0,50, (5000,5), dtype=torch.float)  # count data, 100 samples, 5 features
+    n_genes = 500
+    X = torch.randint(0,50, (5000,n_genes), dtype=torch.float)  # count data, 100 samples, 5 features
     dataset = TensorDataset(X)
     dataloader = DataLoader(dataset, batch_size=64, shuffle=False) 
     # shuffle = False because we need order to be safe for cluster trakcing
 
     # Val Toy data
-    X_val = torch.randint(0,50, (500,5), dtype=torch.float)  # count data, 100 samples, 5 features
+    X_val = torch.randint(0,50, (500,n_genes), dtype=torch.float)  # count data, 100 samples, 5 features
     val_dataset = TensorDataset(X_val)
     val_dataloader = DataLoader(val_dataset, batch_size=64, shuffle=False)
     # shuffle = False because we need order to be safe for cluster trakcing
     
     # Problem setup
-    input_dim = 5 # 5 genes
+    input_dim = n_genes # 5 genes
     hidden_dim = 16 
     hierarchy_components = [2,3,5] # A hierarchy of 3 levels with 2, 3, 9 clusters respectively
     latent_dim = 2 # 2 dimension latent space
