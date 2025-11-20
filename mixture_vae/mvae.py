@@ -511,95 +511,8 @@ class MoMixVAE(nn.Module):
         for param_decoder in self.decoder:
             tensor_list.append(param_decoder(x))
         return torch.cat(tensor_list, dim=1)
-    
-    # def encode(self, x, at_level=None): # AFFECTED
-    #     if at_level is None:
-    #         at_level = self.n_levels - 1
-    #     else:
-    #         assert at_level >= 0 and isinstance(at_level, int), f"at_level must be an index, i.e, a positive int but got {at_level}"
 
-    #     HIERARCHY_COMPONENTS = self.hierarchy_components[:at_level+1] # ensure we do not waste time computing unecessary levels
-    #     # build all n_components one-hots once, 
-    #     # then expand to batch
-    #     all_eyek = [torch.eye(n_components, device=x.device) 
-    #                 for n_components in HIERARCHY_COMPONENTS]
-    #     all_z = [] # list of list
-    #     all_latent = []
-    #     all_z_mix = [] # list of tensors
-    #     all_latent_mix = []
-    #     previous_probas = []
-    #     all_cross_level_probas = []
-    #     # For each cluster we need to compute the z (mixture)
-    #     for level, n_components in enumerate(HIERARCHY_COMPONENTS):
-    #         if level == 0:
-    #             # We approximate p(y_1) by q_(y_1 | x)
-    #             # B x n_components
-    #             cluster_probas_level = self.clustering_block[level](x)
-    #         else:
-    #             # We approximate p(y_l | y1, ..., y_l-1) by q_(y_l | x, ..., y_l-1)
-                
-    #             # add input features and higher level cluster probas 
-    #             # B x (input_dim + n_components_1 + n_components_2 etc..)
-    #             cluster_probas_in = torch.cat([x] + previous_probas, dim=1) 
-    #             # B x n_components
-    #             cluster_probas_level = self.clustering_block[level](cluster_probas_in)
-            
-    #         # register cluster probas for this level
-    #         previous_probas.append(cluster_probas_level)
-
-    #         # register joint probabilities across levels
-    #         cross_level_probas = torch.clone(cluster_probas_level)
-    #         for i in range(1,level+1):
-    #             previous = torch.clone(previous_probas[level-i])
-    #             for _ in range(i):
-    #                 previous = previous.unsqueeze(1)
-    #             cross_level_probas = cross_level_probas.unsqueeze(-1) * previous
-    #         cross_level_probas = torch.flatten(cross_level_probas, start_dim=1)
-    #         all_cross_level_probas.append(cross_level_probas)
-
-    #         all_z_level = []
-    #         all_latent_level = []
-    #         level_combinations = self.combinations[level]
-    #         for combinations in level_combinations: # TODO PARALLELIZE
-    #             # Create the combination of previous level clusters
-    #             all_c_k = [all_eyek[level][k].expand(x.size(0), -1) 
-    #                        for level,k in enumerate(combinations)]
-                
-    #             # add input features
-    #             enc_in = torch.cat([x] + all_c_k, dim=1) # B x (input_dim + n_components_1 + n_components_2 etc..)
-
-    #             # get latent dist parameters
-    #             latent_k = self.all_posterior_latent[level].constraints(self.compute_encoding_params(enc_in, level))
-    #             all_latent_level.append(latent_k) # params for q_k(z|x,y1=k1,y2=k2,...,y_l=kl)
-
-    #             # sample 1 time for each sample in the batch
-    #             # = get the latent sample under the condition y = (k1,k2,...,kl)
-    #             z_k = self.all_posterior_latent[level].sample(latent_k, x.size(0))
-    #             all_z_level.append(z_k) # sample from q_k
-            
-    #         all_z.append(all_z_level)
-    #         all_latent.append(all_latent_level)
-
-    #         z_mixture = torch.stack([t.unsqueeze(1) for t in all_z_level], dim=1).squeeze() # B x K x latent_dim
-    #         z = (cross_level_probas.unsqueeze(-1) * z_mixture).sum(dim=1) # B x latent_dim
-    #         all_z_mix.append(z)
-
-    #         # latent_params: same "mixture-averaged" params (rarely needed downstream)
-    #         lp = torch.stack([t.unsqueeze(1) for t in all_latent_level], dim=1).squeeze()  # B x K x (Dz * n_params/posterior)
-    #         latent_params = (cross_level_probas.unsqueeze(-1) * lp).sum(dim=1)
-    #         all_latent_mix.append(latent_params)
-    #     # We output latent, probas and actual hidden variables for the last level, as well as all detailed other
-    #     return (all_z_mix[-1], 
-    #             all_latent_mix[-1], 
-    #             previous_probas[-1], 
-    #             all_z, 
-    #             all_latent, 
-    #             all_z_mix, 
-    #             all_latent_mix, 
-    #             previous_probas, 
-    #             all_cross_level_probas)
-
-    def encode(self, x, at_level=None): # AFFECTED
+    def encode(self, x, at_level=None):
         if at_level is None:
             at_level = self.n_levels - 1
         else:
@@ -758,6 +671,7 @@ class MoMixVAE(nn.Module):
             return (log_q - log_p) # because kl loss = Eq[log q_z/p_z] and the average is done outside
 
 def compute_level(level_data):
+    """Used if forking is enabled in the model elbo step"""
     x = level_data["x"]
     BATCH_SIZE = x.size(0)
 
@@ -899,11 +813,12 @@ def elbo_MoMix_step(model: MoMixVAE,
             ref = ref.expand_as(level_probas) if ref.ndim == 1 else ref
             # for each level 
             kl_pi = kl_pi + (level_probas * (level_probas.clamp_min(1e-12).log() - ref.clamp_min(1e-12).log())).sum(dim=1).mean()
+    
     elbo = recon - beta_kl * (kl_z + kl_pi)
     loss = -elbo
     # print("Step took", time.time() - t0)
     return loss, dict(recon=recon.detach(), 
-                    kl_latent=kl_z.detach(), 
+                    kl_latent=kl_z.detach(),
                     kl_cluster=kl_pi.detach()), clusters
 
 # NOT VECTORIZED VERSION
