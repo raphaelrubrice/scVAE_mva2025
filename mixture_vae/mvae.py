@@ -385,6 +385,50 @@ def elbo_mixture_step(model: MixtureVAE,
 #                     kl_latent=kl_z.detach(), 
 #                     kl_cluster=kl_pi.detach()), clusters
         
+def summed_elbo_mixture_step(model, x, betas_kl = None):
+    """
+    
+    """
+    if betas_kl == None:    betas_kl = [1 for _ in range(len(model.branches))]
+
+    P = {"recon":0,
+        "kl_latent":0,
+        "kl_cluster":0}
+    
+    L  = 0
+
+    for m, beta in zip(model.branches, betas_kl):
+        loss_value, parts = elbo_mixture_step(m, x, beta)
+
+        L += (loss_value/len(model.branches))
+
+        for pname in parts:
+            P[pname] += (parts[pname]/len(model.branches))
+
+    return L, P
+
+class ind_MoMVAE(nn.Module):
+    """
+    
+    """
+    
+    def __init__(self, PARAMS: list[dict[str, float]]) -> None:
+        """
+        
+        """
+        super(ind_MoMVAE, self).__init__()
+        self.branches = nn.ModuleList([MixtureVAE(**params) for params in PARAMS])
+
+        return None
+    
+
+    def forward(self, x: torch.Tensor) -> list[tuple[torch.Tensor]]:
+        """
+        
+        """
+        return [MVAE(x) for MVAE in self.branches]
+
+
 class MoMixVAE(nn.Module):
     """
     Implementing a Mixture of Mixtures VAE (MoMixVAE) as a framework
