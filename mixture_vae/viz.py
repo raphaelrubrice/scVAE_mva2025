@@ -15,7 +15,7 @@ def save_plot(save_path):
 
 def plot_loss_components(train_parts,
                          val_parts,
-                         beta_kl,
+                         beta_kl_list,
                          title="Loss Breakdown",
                          save_path=None):
     """
@@ -24,17 +24,18 @@ def plot_loss_components(train_parts,
     Args:
         parts (dict): Dictionary with keys "recon", "kl_latent", "kl_cluster".
                       Each value is a list/array of floats (per epoch).
-        beta_kl (float): Weight for KL term.
+        beta_kl_list (iterable): Weight for KL term.
         title (str): Title for the plot.
         save_path (str): Path to save the plot.
     """
+    beta_kl = np.array(beta_kl_list) if not isinstance(beta_kl_list, np.ndarray) else beta_kl_list
     def extract(parts):
         recon = np.array(parts["recon"]).ravel()
         kl_latent = np.array(parts["kl_latent"]).ravel()
         kl_cluster = np.array(parts["kl_cluster"]).ravel()
         kl_total = kl_latent + kl_cluster
         weighted_kl = beta_kl * kl_total
-        total_loss = -(recon + weighted_kl)
+        total_loss = -(recon - weighted_kl)
         return {
             "Reconstruction": recon,
             "KL Latent": kl_latent,
