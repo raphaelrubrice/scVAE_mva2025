@@ -286,6 +286,8 @@ def elbo_mixture_step(model: MixtureVAE,
     # clusters
     if track_clusters:
         clusters = model.cluster_input(cluster_probas=cluster_probas)
+    else:
+        clusters = None
 
     BATCH_SIZE = x.size(0)
     K = model.n_components
@@ -385,27 +387,38 @@ def elbo_mixture_step(model: MixtureVAE,
 #                     kl_latent=kl_z.detach(), 
 #                     kl_cluster=kl_pi.detach()), clusters
         
-def summed_elbo_mixture_step(model, x, betas_kl = None):
+def summed_elbo_mixture_step(model, x, beta_kl: float | None = None, track_clusters: bool =False):
     """
     
     """
-    if betas_kl == None:    betas_kl = [1 for _ in range(len(model.branches))]
+    if beta_kl == None:
+        betas_kl = [1 for _ in range(len(model.branches))]
+    else:
+        betas_kl = [beta_kl for _ in range(len(model.branches))]
 
     P = {"recon":0,
         "kl_latent":0,
         "kl_cluster":0}
     
     L  = 0
-
-    for m, beta in zip(model.branches, betas_kl):
-        loss_value, parts = elbo_mixture_step(m, x, beta)
+    clusters = None
+    for idx, items in enumerate(zip(model.branches, betas_kl)):
+        m, beta = items
+        if track_clusters and idx == model.n_levels - 1:
+            track_clusters_level = True
+        else:
+            track_clusters_level = False
+        loss_value, parts, batch_clusters = elbo_mixture_step(m, x, beta, track_clusters_level)
 
         L += (loss_value/len(model.branches))
+        
+        if batch_clusters is not None:
+            clusters = batch_clusters
 
         for pname in parts:
             P[pname] += (parts[pname]/len(model.branches))
 
-    return L, P
+    return L, P, clusters 
 
 class ind_MoMVAE(nn.Module):
     """
@@ -418,15 +431,33 @@ class ind_MoMVAE(nn.Module):
         """
         super(ind_MoMVAE, self).__init__()
         self.branches = nn.ModuleList([MixtureVAE(**params) for params in PARAMS])
-
+        self.n_levels = len(self.branches)
+        self.last_level = self.n_levels - 1
         return None
     
+    def encode(self, x, at_level=None):
+        if at_level is None:
+            at_level = self.n_levels - 1
+        else:
+            assert at_level >= 0 and isinstance(at_level, int), f"at_level must be an index, i.e, a positive int but got {at_level}"
+        self.last_level = at_level
+        return self.branches[at_level].encode(x)
 
-    def forward(self, x: torch.Tensor) -> list[tuple[torch.Tensor]]:
-        """
-        
-        """
-        return [MVAE(x) for MVAE in self.branches]
+    def decode(self, x):
+        return self.branches[self.last_level].decode()
+    
+    def forward(self, x, at_level=None):
+        z, latent_params, cluster_probas, all_z, all_latent = self.encode(x, at_level=at_level)
+
+        input_params = self.decode(z)
+        return input_params, z, latent_params, cluster_probas, all_z, all_latent
+    
+    def cluster_input(self, x=None, cluster_probas=None, at_level=None): # AFFECTED
+        if x is None:
+            assert cluster_probas is not None, f"Missing cluster_probas: When given no input features you must provide precomputed cluster_probas"
+        else:
+            _, _, cluster_probas, _, _ = self.encode(x, at_level=at_level)
+        return torch.argmax(cluster_probas, dim=1)
 
 
 class MoMixVAE(nn.Module):
@@ -789,7 +820,9 @@ def elbo_MoMix_step(model: MoMixVAE,
     # clusters
     if track_clusters:
         clusters = model.cluster_input(cluster_probas=cluster_probas)
-
+    else:
+        clusters = None
+        
     BATCH_SIZE = x.size(0)
     # K = model.n_components
 

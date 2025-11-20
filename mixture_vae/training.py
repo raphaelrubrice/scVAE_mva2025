@@ -402,10 +402,14 @@ if __name__ == "__main__":
     os.chdir(file_parent)
 
     from torch.utils.data import TensorDataset, DataLoader
-
+    from argparse import ArgumentParser
     from mixture_vae.distributions import NormalDistribution, UniformDistribution, NegativeBinomial
 
-    model_type = 1
+    parser = ArgumentParser()
+    parser.add_argument("--model", type=int, help="Model type")
+
+    args = parser.parse_args()
+    model_type = args.model
     
     # Train Toy data
     X = torch.randint(0,50, (5000,5), dtype=torch.float)  # count data, 100 samples, 5 features
