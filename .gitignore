@@ -1,2 +1,9 @@
 *__pycache__/
 .venv/
+# data folders
+data_pipeline/data/
+data_pipeline/data/pbmc_raw/
+data_pipeline/data/pbmc_processed/
+data/
+*.h5ad
+*.tar.gz
