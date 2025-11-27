@@ -9,7 +9,7 @@ The pipeline is fully modular:
 - `load_anndata.py` handles **loading + annotation only**
 - `combine.py` handles **combining + freezing categories + saving shards**
 - `dataloader.py` handles **building AnnCollection + AnnLoader for PyTorch**
-- `utils_io.py` hosts shared helpers
+- `AnnDatasetWrapper` (in `DatasetWrapper.py`) provides a **PyTorch Dataset-compatible wrapper** so each sample returns `X` + the 4 hierarchical labels
 - `config.py` stores URLs + label metadata
 
 You can see examples of workflow in **test_pipeline.ipynb**
@@ -27,18 +27,21 @@ for batch in train_loader:
     break
 ```
 
+
+```text
 data_pipeline/
-│── config.py                     # metadata for all 9 datasets
+│── config.py # metadata for all 9 datasets
+│
 ├── data/
-│   ├── pbmc_raw/                 # downloaded + extracted raw files
-│   └── pbmc_processed/
-│       ├── pbmc_combined.h5ad    # full combined dataset
-│       └── shards/               # per-dataset .h5ad shards
+│ ├── pbmc_raw/ # downloaded + extracted raw files
+│ └── pbmc_processed/
+│ ├── pbmc_combined.h5ad # full combined dataset
+│ └── shards/ # per-dataset .h5ad shards
 │
 ├── src/
-│   ├── download_script.py        # download + extract only
-│   ├── load_anndata.py           # load 10X folders → AnnData with labels
-│   ├── combine.py                # combine + write shards + freeze labels
-│   ├── dataloader.py             # AnnCollection + AnnLoader for PyTorch
-│   └── utils_io.py               # small helpers (var cleanup, logging, etc.)
-
+│ ├── download_script.py # download + extract only
+│ ├── load_anndata.py # load 10X folders → AnnData with labels
+│ ├── combine.py # combine + write shards + freeze labels
+│ ├── dataloader.py # AnnCollection + AnnLoader for PyTorch
+│ └── utils_io.py # shared helpers (var cleanup, logging, etc.)
+```
