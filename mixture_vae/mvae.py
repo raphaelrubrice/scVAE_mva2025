@@ -91,6 +91,7 @@ class MixtureVAE(nn.Module):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.n_components = n_components
+        self.n_levels = 1
         self.n_layers = n_layers
         self.act_func = act_func
         self.dropout = dropout
@@ -270,6 +271,67 @@ class MixtureVAE(nn.Module):
             # (average outside)
             return (log_q - log_p) # because kl loss = Eq[log q_z/p_z] and the average is done outside
 
+    def iwae(self, batch_x, N = 500):
+        """
+        Estimates total marginal log-likelihood using the 
+        IWAE from Burga et al. in 2016
+        """
+        self.eval()
+        with torch.no_grad():
+            (z, 
+            latent_params, 
+            cluster_probas, 
+            all_z, 
+            all_latent
+            ) = self.encode(x)
+            
+            batch_size = batch_x.size(0)
+            clusters = torch.argmax(cluster_probas,dim=1)
+
+            # fetch latent from the appropriate cluster for each input sample
+            selected_latents = torch.cat([all_latent[c][i:i+1,:] 
+                                        for i,c in enumerate(clusters)], 
+                                        dim=0)
+
+            sum_paramdims = selected_latents.size(1)
+            latent_params = selected_latents.unsqueeze(1) # batch, 1, sum paramdims
+            latent_params = latent_params.expand(batch_size, N, sum_paramdims)
+
+            # sample from latent posterior
+            posterior_latent = self.posterior_latent
+            sampled_z = posterior_latent.sample(latent_params, batch_size)
+
+            # obtain decoder output (parameters of the prior distirbution for each sample)
+            latent_dim = self.latent_dim
+            input_params = self.decode(sampled_z.reshape(-1, latent_dim))
+
+            # log p(x|z,y)
+            # get reference parameters in correct shape
+            prior_input = self.prior_input
+            prior_params = prior_input.get_reference_params(batch_x)
+            log_p_x_zy = prior_input.log_likelihood(batch_x, 
+                                                    prior_params)
+            log_p_x_zy = log_p_x_zy.sum(dim=1).unsqueeze(1) # sum over data_dim => (batch,1)
+            log_p_x_zy = log_p_x_zy.expand(batch_size, N)
+
+            # log p(z)
+            prior_latent = self.prior_latent
+            prior_latent_params = prior_latent.get_reference_params(sampled_z.view(-1,latent_dim))
+            log_p_z = prior_latent.log_likelihood(sampled_z.view(-1,latent_dim), 
+                                                       prior_latent_params)
+            log_p_z = log_p_z.reshape(batch_size, N)
+            
+            # log q(z|x,y)
+            posterior_latent_params = posterior_latent.get_reference_params(sampled_z.view(-1,latent_dim))
+            log_q_z_xy = posterior_latent.log_likelihood(sampled_z.view(-1,latent_dim), 
+                                                       posterior_latent_params)
+            log_q_z_xy = log_q_z_xy.reshape(batch_size, N)
+
+            # Log sum exp trick for stable compute of the likelihood ratios
+            logspace_ratio = log_p_x_zy + log_p_z - log_q_z_xy
+            sumexp = torch.logsumexp(logspace_ratio, dim=1)
+            return sumexp - torch.log(torch.tensor([N])) # IWAE for each sample in batch_x
+
 def elbo_mixture_step(model: MixtureVAE, 
                       x: torch.Tensor, 
                       beta_kl=1.0, 
@@ -327,65 +389,6 @@ def elbo_mixture_step(model: MixtureVAE,
     return loss, dict(recon=recon.detach(), 
                     kl_latent=kl_z.detach(), 
                     kl_cluster=kl_pi.detach()), clusters
-
-# NOT VECTORIZED     
-# def elbo_mixture_step(model: MixtureVAE, 
-#                       x: torch.Tensor, 
-#                       beta_kl=1.0, 
-#                       track_clusters: bool = False):
-#     # Forward (keeps all component samples)
-#     (input_params, 
-#      z_mixture, 
-#      latent_params_mixture, 
-#      cluster_probas, 
-#      all_z, 
-#      all_latent
-#      ) = model(x)
-
-#     # clusters
-#     if track_clusters:
-#         clusters = model.cluster_input(cluster_probas=cluster_probas)
-
-#     B = x.size(0)
-#     K = model.n_components
-
-#     # see supplementary 1
-#     # 1) Reconstruction: sum_k pi_k * E_{q_k} [ log p(x|z) ]
-#     # One Monte carlo sample per component: z_k in all_z[k]
-#     log_px_per_k = []
-#     for k in range(K):
-#         # params of p(x|z_k)
-#         params_k = model.decode(all_z[k]) 
-#         # compute log p(x|z_k)
-#         log_px_k = model.log_likelihood_input(x, params_k) 
-#         # sum over features inside = shape B
-#         log_px_per_k.append(log_px_k)
-#     log_px_per_k = torch.stack(log_px_per_k, dim=1) # [B, K]
-#     recon = (cluster_probas.unsqueeze(2) * log_px_per_k).sum(dim=1).mean() # scalar
-    
-#     # 2) Latent KL: sum_k pi_k * KL(q_k || p)
-#     kl_per_k = []
-#     for k in range(K):
-#         # expects B after summing over latent dims internally
-#         kl_k = model.kl_div(z=None, learned_params=all_latent[k])
-#         # if kl_k has extra dims, reduce over latent dims here
-#         if kl_k.dim() > 1:
-#             kl_k = kl_k.sum(dim=1)
-#         kl_per_k.append(kl_k)
-#     kl_per_k = torch.stack(kl_per_k, dim=1)                # [B, K]
-#     kl_z = (cluster_probas * kl_per_k).sum(dim=1).mean()               # scalar
-
-#     # 3) Cluster KL: KL(π(x) || p(c))
-#     ref = model.prior_categorical.get_ref_proba() # scalar or [K]
-#     ref = ref.to(cluster_probas.device)
-#     ref = ref.expand_as(cluster_probas) if ref.ndim == 1 else ref
-#     kl_pi = (cluster_probas * (cluster_probas.clamp_min(1e-12).log() - ref.clamp_min(1e-12).log())).sum(dim=1).mean()
-
-#     elbo = recon - beta_kl * (kl_z + kl_pi)
-#     loss = -elbo
-#     return loss, dict(recon=recon.detach(), 
-#                     kl_latent=kl_z.detach(), 
-#                     kl_cluster=kl_pi.detach()), clusters
         
 def summed_elbo_mixture_step(model, x, beta_kl: float | None = None, track_clusters: bool =False):
     """
@@ -443,11 +446,16 @@ class ind_MoMVAE(nn.Module):
         self.last_level = at_level
         return self.branches[at_level].encode(x)
 
-    def decode(self, x):
-        return self.branches[self.last_level].decode()
+    def decode(self, z):
+        return self.branches[self.last_level].decode(z)
     
     def forward(self, x, at_level=None):
-        z, latent_params, cluster_probas, all_z, all_latent = self.encode(x, at_level=at_level)
+        (z, 
+         latent_params, 
+         cluster_probas, 
+         all_z, 
+         all_latent
+         ) = self.encode(x, at_level=at_level)
 
         input_params = self.decode(z)
         return input_params, z, latent_params, cluster_probas, all_z, all_latent
@@ -458,6 +466,70 @@ class ind_MoMVAE(nn.Module):
         else:
             _, _, cluster_probas, _, _ = self.encode(x, at_level=at_level)
         return torch.argmax(cluster_probas, dim=1)
+    
+    def iwae(self, batch_x, N = 500, at_level=None):
+        """
+        Estimates total marginal log-likelihood using the 
+        IWAE from Burga et al. in 2016
+        """
+        if at_level is None:
+            at_level = self.n_levels - 1
+        return self.branches[at_level].iwae(batch_x)
+        # self.eval()
+        # with torch.no_grad():
+        #     (z, 
+        #     latent_params, 
+        #     cluster_probas, 
+        #     all_z, 
+        #     all_latent
+        #     ) = self.encode(batch_x, at_level=at_level)
+            
+        #     batch_size = batch_x.size(0)
+        #     clusters = torch.argmax(cluster_probas,dim=1)
+
+        #     # fetch latent from the appropriate cluster for each input sample
+        #     selected_latents = torch.cat([all_latent[c][i:i+1,:] 
+        #                                 for i,c in enumerate(clusters)], 
+        #                                 dim=0)
+
+        #     sum_paramdims = selected_latents.size(1)
+        #     latent_params = selected_latents.unsqueeze(1) # batch, 1, sum paramdims
+        #     latent_params = latent_params.expand(batch_size, N, sum_paramdims)
+
+        #     # sample from latent posterior
+        #     posterior_latent = self.branches[at_level].posterior_latent
+        #     sampled_z = posterior_latent.sample(latent_params, batch_size)
+
+        #     # obtain decoder output (parameters of the prior distirbution for each sample)
+        #     latent_dim = self.branches[at_level].latent_dim
+        #     input_params = self.decode(sampled_z.reshape(-1, latent_dim))
+
+        #     # log p(x|z,y)
+        #     # get reference parameters in correct shape
+        #     prior_input = self.branches[at_level].prior_input
+        #     prior_params = prior_input.get_reference_params(batch_x)
+        #     log_p_x_zy = prior_input.log_likelihood(batch_x, 
+        #                                             prior_params)
+        #     log_p_x_zy = log_p_x_zy.sum(dim=1).unsqueeze(1) # sum over data_dim => (batch,1)
+        #     log_p_x_zy = log_p_x_zy.expand(batch_size, N)
+
+        #     # log p(z)
+        #     prior_latent = self.branches[at_level].prior_latent
+        #     prior_latent_params = prior_latent.get_reference_params(sampled_z.view(-1,latent_dim))
+        #     log_p_z = prior_latent.log_likelihood(sampled_z.view(-1,latent_dim), 
+        #                                                prior_latent_params)
+        #     log_p_z = log_p_z.reshape(batch_size, N)
+            
+        #     # log q(z|x,y)
+        #     posterior_latent_params = posterior_latent.get_reference_params(sampled_z.view(-1,latent_dim))
+        #     log_q_z_xy = posterior_latent.log_likelihood(sampled_z.view(-1,latent_dim), 
+        #                                                posterior_latent_params)
+        #     log_q_z_xy = log_q_z_xy.reshape(batch_size, N)
+
+        #     # Log sum exp trick for stable compute of the likelihood ratios
+        #     logspace_ratio = log_p_x_zy + log_p_z - log_q_z_xy
+        #     sumexp = torch.logsumexp(logspace_ratio, dim=1)
+        #     return sumexp - torch.log(torch.tensor([N])) # IWAE for each sample in batch_x
 
 
 class MoMixVAE(nn.Module):
@@ -744,6 +816,74 @@ class MoMixVAE(nn.Module):
             log_p = self.prior_latent.log_likelihood(z, prior_params)
             # (average outside)
             return (log_q - log_p) # because kl loss = Eq[log q_z/p_z] and the average is done outside
+    
+    def iwae(self, batch_x, N = 500, at_level=None):
+        """
+        Estimates total marginal log-likelihood using 
+        the IWAE from Burga et al. in 2016
+        """
+        if at_level is None:
+            at_level = self.n_levels - 1
+        self.eval()
+        with torch.no_grad():
+            (z_mix, 
+            latent_params_mix, 
+            cluster_probas, 
+            all_z, 
+            all_latent,
+            all_z_mix, 
+            all_latent_mix, 
+            all_cluster_probas,
+            all_cross_level_probas
+            ) = self.encode(batch_x, at_level=at_level)
+            
+            batch_size = batch_x.size(0)
+            clusters = torch.argmax(cluster_probas,dim=1)
+
+            # fetch latent from the appropriate cluster for each input sample
+            selected_latents = torch.cat([all_latent[-1][c][i:i+1,:] 
+                                        for i,c in enumerate(clusters)], 
+                                        dim=0)
+            sum_paramdims = selected_latents.size(1)
+            latent_params = selected_latents.unsqueeze(1) # batch, 1, sum paramdims
+            latent_params = latent_params.expand(batch_size, N, sum_paramdims)
+            
+            # sample from latent posterior
+            posterior_latent = self.all_posterior_latent[at_level]
+            sampled_z = posterior_latent.sample(latent_params, batch_size)
+
+            # obtain decoder output (parameters of the prior distirbution for each sample)
+            input_params = self.decode(sampled_z.reshape(-1, self.latent_dim))
+
+            # log p(x|z,y)
+            # get reference parameters in correct shape
+            prior_params = self.prior_input.get_reference_params(batch_x)
+            log_p_x_zy = self.prior_input.log_likelihood(batch_x, 
+                                                    prior_params)
+            log_p_x_zy = log_p_x_zy.sum(dim=1).unsqueeze(1) # sum over data_dim => (batch,1)
+            log_p_x_zy = log_p_x_zy.expand(batch_size, N)
+
+            # log p(z)
+            prior_latent_params = self.prior_latent.get_reference_params(sampled_z.view(-1,self.latent_dim))
+            log_p_z = self.prior_latent.log_likelihood(sampled_z.view(-1,self.latent_dim), 
+                                                       prior_latent_params)
+            log_p_z = log_p_z.reshape(batch_size, N)
+            
+            # log q(z|x,y)
+            posterior_latent_params = posterior_latent.get_reference_params(sampled_z.view(-1,self.latent_dim))
+            log_q_z_xy = posterior_latent.log_likelihood(sampled_z.view(-1,self.latent_dim), 
+                                                       posterior_latent_params)
+            log_q_z_xy = log_q_z_xy.reshape(batch_size, N)
+
+            # Log sum exp trick for stable compute of the likelihood ratios
+            logspace_ratio = log_p_x_zy + log_p_z - log_q_z_xy
+            sumexp = torch.logsumexp(logspace_ratio, dim=1)
+            return sumexp - torch.log(torch.tensor([N])) # IWAE for each sample in batch_x
+
+            
+
+
+
 
 def compute_level(level_data):
     """Used if forking is enabled in the model elbo step"""
@@ -898,95 +1038,16 @@ def elbo_MoMix_step(model: MoMixVAE,
                     kl_latent=kl_z.detach(),
                     kl_cluster=kl_pi.detach()), clusters
 
-# NOT VECTORIZED VERSION
-# def elbo_MoMix_step(model: MoMixVAE, 
-#                       x: torch.Tensor, 
-#                       beta_kl=1.0, 
-#                       track_clusters: bool = False,
-#                       jit: bool = False):
-#     t0 = time.time()
-#     # Forward (keeps all component samples)
-#     (input_params, 
-#      z_mixture, 
-#      latent_params_mixture, 
-#      cluster_probas, 
-#      all_z, 
-#      all_latent,
-#      all_z_mix,
-#      all_latent_mix,
-#      all_cluster_probas,
-#      all_cross_level_probas,
-#      ) = model(x)
-
-#     # clusters
-#     if track_clusters:
-#         clusters = model.cluster_input(cluster_probas=cluster_probas)
-
-#     # B = x.size(0)
-#     # K = model.n_components
-
-#     if jit: # attempt at using forking for faster loss computation => no speed up observed
-#         futures = []
-#         for level in range(model.n_levels):
-#             level_data = {"x":x,
-#                         "model": model, 
-#                         "level": level,
-#                         "joint_probas": all_cross_level_probas[level],
-#                         "level_probas": all_cluster_probas[level],
-#                         "all_z_level": all_z[level],
-#                         "all_latent_level": all_latent[level]}
-#             futures.append(torch.jit.fork(compute_level, level_data))
-
-#         results = [torch.jit.wait(f) for f in futures]
-
-#         recon = torch.cat([out[0].ravel() for out in results]).sum()
-#         kl_z = torch.cat([out[1].ravel() for out in results]).sum()
-#         kl_pi = torch.cat([out[2].ravel() for out in results]).sum()
-#     else:
-#         recon = 0
-#         kl_z = 0
-#         kl_pi = 0
-#         for level in range(model.n_levels): # PARALLELIZE
-#             joint_probas = all_cross_level_probas[level]
-#             level_probas = all_cluster_probas[level]
-#             # see supplementary 1
-#             # 1) Reconstruction: sum_k pi_k * E_{q_k} [ log p(x|z) ]
-#             # One Monte carlo sample per combination of components: z_k in all_z[level][combination]
-#             log_px_per_combinations = []
-#             level_n_combinations = len(all_z[level])
-#             for comb in range(level_n_combinations):
-#                 # params of p(x|z_k)
-#                 params_comb = model.decode(all_z[level][comb]) 
-#                 # compute log p(x|z_k)
-#                 log_px_comb = model.log_likelihood_input(x, params_comb) 
-#                 # sum over features inside = shape B
-#                 log_px_per_combinations.append(log_px_comb)
-#             log_px_per_combinations = torch.stack(log_px_per_combinations, dim=1) # [B, K]
-#             print(joint_probas.unsqueeze(2).size())
-#             print(log_px_per_combinations.size())
-#             recon = recon + (joint_probas.unsqueeze(2) * log_px_per_combinations).sum(dim=1).mean() # scalar
-            
-#             # 2) Latent KL: sum_k pi_k * KL(q_k || p)
-#             kl_per_combinations = []
-#             for comb in range(level_n_combinations):
-#                 # expects B after summing over latent dims internally
-#                 kl_comb = model.kl_div(z=None, learned_params=all_latent[level][comb])
-#                 # if kl_k has extra dims, reduce over latent dims here
-#                 if kl_comb.dim() > 1:
-#                     kl_comb = kl_comb.sum(dim=1)
-#                 kl_per_combinations.append(kl_comb)
-#             kl_per_combinations = torch.stack(kl_per_combinations, dim=1)                # [B, K]
-#             kl_z = kl_z + (joint_probas * kl_per_combinations).sum(dim=1).mean()               # scalar
-
-#             # 3) Cluster KL: KL(π(x) || p(c))
-#             ref = model.all_prior_categorical[level].get_ref_proba() # scalar or [K]
-#             ref = ref.to(level_probas.device)
-#             ref = ref.expand_as(level_probas) if ref.ndim == 1 else ref
-#             # for each level 
-#             kl_pi = kl_pi + (level_probas * (level_probas.clamp_min(1e-12).log() - ref.clamp_min(1e-12).log())).sum(dim=1).mean()
-#     elbo = recon - beta_kl * (kl_z + kl_pi)
-#     loss = -elbo
-#     print("Step took", time.time() - t0)
-#     return loss, dict(recon=recon.detach(), 
-#                     kl_latent=kl_z.detach(), 
-#                     kl_cluster=kl_pi.detach()), clusters
+def IWAE(model, batch_x, N = 500):
+    """
+    Importance Weighted Autoencoder estimator (Burga et al. 2016)
+    """
+    if isinstance(model, MixtureVAE):
+        pass
+    elif isinstance(model, ind_MoMVAE):
+        pass
+    elif isinstance(model, MoMixVAE):
+        pass
+    else:
+        raise ValueError(f"Unsupported model type {type(model)}. Must be either MixtureVAE, ind_MoMVAE, MoMixVAE")
+    return model.iwae(batch_x, N)

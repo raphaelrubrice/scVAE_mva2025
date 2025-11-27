@@ -34,13 +34,21 @@ def split_or_validate_features(T, dims):
     """
     # Case 1: single tensor
     if isinstance(T, torch.Tensor):
-        B, D = T.shape
+        shape = T.size()
+        if len(shape) == 2:
+            B, D = shape
+            N = None
+        elif len(shape) == 3:
+            B, N, D = shape
         if D != sum(dims):
             raise ValueError(f"Tensor has {D} features, expected {sum(dims)}")
         out = []
         start = 0
         for d in dims:
-            out.append(T[:, start:start+d])
+            if N is None:
+                out.append(T[:, start:start+d])
+            else:
+                out.append(T[:, :, start:start+d])
             start += d
         return tuple(out)
 

@@ -103,7 +103,7 @@ class UniformDistribution(Distribution):
             shape = [batch_size, self.sample_dim]
             shape = tuple(shape)
         else:
-            shape = [latent_params.size(0), self.sample_dim]
+            shape = [dim for dim in latent_params.size()][:-1] + [self.sample_dim]
             shape = tuple(shape)
             if batch_size != shape[0]:
                 print(f"WARNING: Mismatch between param batch dim ({shape[0]}) and batch_size ({batch_size})!")
@@ -188,7 +188,7 @@ class NormalDistribution(Distribution):
             shape = [batch_size, self.sample_dim]
             shape = tuple(shape)
         else:
-            shape = [latent_params.size(0), self.sample_dim]
+            shape = [dim for dim in latent_params.size()][:-1] + [self.sample_dim]
             shape = tuple(shape)
             if batch_size != shape[0]:
                 print(f"WARNING: Mismatch between param batch dim ({shape[0]}) and batch_size ({batch_size})!")
