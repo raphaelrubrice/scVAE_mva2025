@@ -474,15 +474,15 @@ if __name__ == "__main__":
         model = ind_MoMVAE(
             PARAMS = [
             {"input_dim": input_dim,
-            "hidden_dim": h,
+            "hidden_dim": 128,
             "n_components": n_components,
             "n_layers": 1,
             "prior_latent": prior_latent,
             "prior_input": prior_input,
             "prior_categorical": prior_categorical,
-            "posterior_latent": posterior_latent} for h in [1, 2, 4, 8]]
+            "posterior_latent": posterior_latent} for n_components in [2, 4, 8]]
         )
-
+        
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     EPOCHS = 50
