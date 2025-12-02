@@ -129,7 +129,7 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
                        "kl_cluster":[]}
         epoch_clusters = []
         for batch in dataloader:
-            x = batch[0]
+            x = batch["X"]
             optimizer.zero_grad()
             
             if model_type == 0:
@@ -170,7 +170,7 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
         val_epoch_clusters = []
         with torch.no_grad():
             for batch in val_dataloader:
-                x = batch[0]
+                x = batch["X"]
                 if model_type == 0:
                     loss, parts, batch_clusters = elbo_mixture_step(model, 
                                                 x, 
@@ -277,7 +277,7 @@ def training_momixvae(dataloader: torch.utils.data.DataLoader,
                        "kl_cluster":[]}
         epoch_clusters = []
         for batch in dataloader:
-            x = batch[0]
+            x = batch["X"]
             optimizer.zero_grad()
 
             loss, parts, batch_clusters = elbo_MoMix_step(model, 
@@ -312,7 +312,7 @@ def training_momixvae(dataloader: torch.utils.data.DataLoader,
         val_epoch_clusters = []
         with torch.no_grad():
             for batch in val_dataloader:
-                x = batch[0]
+                x = batch["X"]
                 loss, parts, batch_clusters = elbo_MoMix_step(model, 
                                                 x, 
                                                 beta_kl=beta_kl,
@@ -373,7 +373,7 @@ def retrieve_latent(model, dataloader):
     model.eval()
     with torch.no_grad():
         for batch in dataloader:
-                x = batch[0]
+                x = batch["X"]
                 (input_params, 
                 z_mixture, 
                 latent_params_mixture, 
