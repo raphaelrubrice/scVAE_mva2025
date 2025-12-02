@@ -34,7 +34,7 @@ def download_and_extract(url: str, out_dir: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"⇩ Downloading and extracting to {out_dir}")
 
-    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=True) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
         response = requests.get(url, stream=True, timeout=120)
         response.raise_for_status()
         total = int(response.headers.get("content-length", 0))

@@ -46,7 +46,7 @@ def load_anndata(folder: str | Path, meta: dict) -> ad.AnnData:
     matrix_dir = _find_matrix_dir(folder)
 
     print(f"Loading 10x data from: {matrix_dir}")
-    adata = sc.read_10x_mtx(matrix_dir, var_names="gene_symbols", cache=True)
+    adata = sc.read_10x_mtx(matrix_dir, var_names="gene_symbols", cache=False)
     adata.var_names_make_unique()
 
     # annotate hierarchy
