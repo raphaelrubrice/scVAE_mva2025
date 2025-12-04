@@ -72,10 +72,9 @@ def build_collection_from_shards(
     """
     Load .h5ad shards and join into an AnnCollection.
 
-    If `filter_genes=True`, first materialize an in-memory AnnData with
-    globally unique obs_names to compute per-gene std and select the
-    top `max_genes` most variable genes, then apply this filter to the
-    final AnnCollection.
+    - Ensures *global* uniqueness of obs_names by prefixing with shard index.
+    - If `filter_genes=True`, materializes a unified AnnData to compute per-gene
+      std and keep the top `max_genes` most variable genes.
     """
     shard_dir = Path(shard_dir)
     paths = sorted(shard_dir.glob("*.h5ad"))
@@ -84,65 +83,65 @@ def build_collection_from_shards(
         raise FileNotFoundError(f"No .h5ad shards found in {shard_dir}")
 
     # ------------------------------------------------------------------
-    # 1) Build the collection
+    # 1) Load shards and enforce *global* unique obs_names
+    # ------------------------------------------------------------------
+    adatas = []
+    for shard_idx, p in enumerate(paths):
+        # For gene filtering we need in-memory AnnData anyway.
+        # For no filtering you can switch to `backed="r"` if memory is tight.
+        a = ad.read_h5ad(p) if filter_genes else ad.read_h5ad(p, backed="r")
+
+        # Save original names (barcodes) so they are not lost
+        # (in backed mode, this is allowed and will be written to disk if changed)
+        if "orig_obs_name" not in a.obs:
+            # `a.obs_names` is an Index; cast to str to be safe
+            a.obs["orig_obs_name"] = np.asarray(a.obs_names.astype(str))
+
+        # Build globally unique obs_names: "<shard_idx>_<original_name>"
+        new_obs_names = [f"{shard_idx}_{name}" for name in a.obs["orig_obs_name"].astype(str)]
+        a.obs_names = new_obs_names
+
+        adatas.append(a)
+
+    collection = AnnCollection(
+        adatas,
+        join_vars="outer",
+        join_obs="outer",
+        label="dataset",
+    )
+
+    # Sanity check: now this MUST be True
+    if not collection.obs_names.is_unique:
+        raise RuntimeError("obs_names are still not unique after prefixing; check shard loading logic.")
+
+    # ------------------------------------------------------------------
+    # 2) Optional gene filtering: requires materializing to AnnData
     # ------------------------------------------------------------------
     if filter_genes:
-        # Need to be able to modify obs_names and materialize .X
-        adatas = []
-        for i, p in enumerate(paths):
-            a = ad.read_h5ad(p)  # in-memory
-            # Make obs_names unique *within each shard* if needed
-            if not a.obs_names.is_unique:
-                a.obs_names_make_unique()
-            adatas.append(a)
-
-        collection = AnnCollection(
-            adatas,
-            join_vars="outer",
-            join_obs="outer",
-            label="dataset",
-        )
-
-        # ------------------------------------------------------------------
-        # 2) Materialize a unified AnnData ONLY to compute gene stats
-        # ------------------------------------------------------------------
-        # Now obs_names are unique, so this won't throw InvalidIndexError
+        # This is where it used to crash; now obs_names are globally unique
         adata = collection.to_adata()
 
         X = adata.X
-        # std along cells axis
         if sparse.issparse(X):
-            # sparse.std(axis=0) returns a matrix; convert → 1D array
             stds = np.asarray(X.std(axis=0)).ravel()
         else:
             stds = X.std(axis=0)
 
-        # Guard against pathological cases
         if max_genes > adata.n_vars:
             max_genes = adata.n_vars
 
-        # Get indices of top-variance genes
-        # NOTE: argsort ascending → take last `max_genes` for highest variance
-        kept_gene_indices = np.argsort(stds)[-max_genes:]
-        kept_gene_names = adata.var_names[kept_gene_indices]
+        # Take highest-variance genes
+        kept_idx = np.argsort(stds)[-max_genes:]
+        kept_gene_names = adata.var_names[kept_idx]
 
         print("Before filtering:", collection)
-        # Filter collection by gene *names* (robust to join order)
         collection = collection[:, kept_gene_names]
         print("After filtering:", collection)
 
-    else:
-        # Memory-efficient path: keep shards backed, no to_adata() call
-        adatas = [ad.read_h5ad(p, backed="r") for p in paths]
-        collection = AnnCollection(
-            adatas,
-            join_vars="outer",
-            join_obs="outer",
-            label="dataset",
-        )
-
-    print(f"✓ Built AnnCollection with {collection.n_obs} total cells "
-          f"and {collection.n_vars} genes.")
+    print(
+        f"✓ Built AnnCollection with {collection.n_obs} total cells "
+        f"and {collection.n_vars} genes."
+    )
     return collection
 
 # split collection to train/val/test
