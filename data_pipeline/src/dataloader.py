@@ -69,76 +69,47 @@ def build_collection_from_shards(
     shard_dir: str | Path = "data/pbmc_processed/shards",
     filter_genes: bool = False,
     max_genes: int = 5000,
-) -> AnnCollection:
-    """
-    Load .h5ad shards and join into an AnnCollection.
-
-    - Ensures *global* uniqueness of obs_names by prefixing with shard index.
-    - If `filter_genes=True`, materializes a unified AnnData to compute per-gene
-      std and keep the top `max_genes` most variable genes.
-    """
+):
     shard_dir = Path(shard_dir)
     paths = sorted(shard_dir.glob("*.h5ad"))
-
     if not paths:
         raise FileNotFoundError(f"No .h5ad shards found in {shard_dir}")
 
-    # ------------------------------------------------------------------
-    # 1) Load shards and enforce *global* unique obs_names
-    # ------------------------------------------------------------------
-    adatas = []
-    for shard_idx, p in enumerate(paths):
-        # For gene filtering we need in-memory AnnData anyway.
-        # For no filtering you can switch to `backed="r"` if memory is tight.
-        a = ad.read_h5ad(p) if filter_genes else ad.read_h5ad(p, backed="r")
+    # Load all shards in memory (needed if we want X)
+    adatas = [ad.read_h5ad(p) for p in paths]
 
-        # Save original names (barcodes) so they are not lost
-        # (in backed mode, this is allowed and will be written to disk if changed)
-        if "orig_obs_name" not in a.obs:
-            # `a.obs_names` is an Index; cast to str to be safe
-            a.obs["orig_obs_name"] = np.asarray(a.obs_names.astype(str))
+    if filter_genes:
+        # 1) Concatenate into a single AnnData WITH .X
+        big = ad.concat(
+            adatas,
+            join="outer",
+            label="dataset",
+            keys=[str(i) for i in range(len(adatas))],
+            index_unique="shard-",
+        )
 
-        # Build globally unique obs_names: "<shard_idx>_<original_name>"
-        new_obs_names = [f"{shard_idx}_{name}" for name in a.obs["orig_obs_name"].astype(str)]
-        a.obs_names = new_obs_names
+        X = big.X
+        if sparse.issparse(X):
+            stds = np.asarray(X.std(axis=0)).ravel()
+        else:
+            stds = X.std(axis=0)
 
-        adatas.append(a)
+        if max_genes > big.n_vars:
+            max_genes = big.n_vars
 
+        kept_idx = np.argsort(stds)[-max_genes:]  # highest-variance genes
+        kept_genes = big.var_names[kept_idx]
+
+        # 2) Filter each shard individually to those genes
+        adatas = [a[:, kept_genes] for a in adatas]
+
+    # 3) Build AnnCollection from the (optionally filtered) shards
     collection = AnnCollection(
         adatas,
         join_vars="outer",
         join_obs="outer",
         label="dataset",
     )
-
-    # Sanity check: now this MUST be True
-    if not collection.obs_names.is_unique:
-        raise RuntimeError("obs_names are still not unique after prefixing; check shard loading logic.")
-
-    # ------------------------------------------------------------------
-    # 2) Optional gene filtering: requires materializing to AnnData
-    # ------------------------------------------------------------------
-    if filter_genes:
-        # This is where it used to crash; now obs_names are globally unique
-        adata = collection.to_adata()
-        print("AnnData:", adata)
-        X = adata.X
-        print("X", X)
-        if scipy.sparse.issparse(X):
-            stds = np.asarray(X.std(axis=0)).ravel()
-        else:
-            stds = X.std(axis=0)
-
-        if max_genes > adata.n_vars:
-            max_genes = adata.n_vars
-
-        # Take highest-variance genes
-        kept_idx = np.argsort(stds)[-max_genes:]
-        kept_gene_names = adata.var_names[kept_idx]
-
-        print("Before filtering:", collection)
-        collection = collection[:, kept_gene_names]
-        print("After filtering:", collection)
 
     print(
         f"✓ Built AnnCollection with {collection.n_obs} total cells "
