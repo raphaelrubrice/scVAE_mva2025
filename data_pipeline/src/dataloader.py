@@ -291,5 +291,5 @@ def build_cv_dataloaders(
     print(
         f"✓ Train={len(datasets['train'])}, Val={len(datasets['val'])}, Test={len(datasets['test'])}"
     )
-    print(f"✓ Train/Val CV Folds: {[(len(train),len(val)) for train,val in folds]}")
+    print(f"✓ Train/Val CV Folds (n°batches): {[(len(train),len(val)) for train,val in folds]}")
     return folds, test_loader
