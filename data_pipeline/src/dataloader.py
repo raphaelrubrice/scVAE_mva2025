@@ -167,11 +167,12 @@ def build_cv_dataloaders(
     train_frac=0.81,
     val_frac=0.09,
     seed=1234,
+    **kwargs
 ):
     """Return (train_loader, val_loader, test_loader) PyTorch DataLoaders."""
 
     # Build collection and converter
-    collection = build_collection_from_shards(shard_dir)
+    collection = build_collection_from_shards(shard_dir, **kwargs)
     converter = make_converter(label_maps_path, one_hot_labels=one_hot)
 
     # Split into train/val/test AnnCollectionViews
