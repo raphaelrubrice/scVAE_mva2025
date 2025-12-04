@@ -123,6 +123,7 @@ def build_collection_from_shards(
         adata = collection.to_adata()
         print("AnnData:", adata)
         X = adata.X
+        print("X", X)
         if scipy.sparse.issparse(X):
             stds = np.asarray(X.std(axis=0)).ravel()
         else:
