@@ -89,7 +89,6 @@ def build_collection_from_shards(
         )
 
         X = big.X
-        print(X)
         if scipy.sparse.issparse(X):
             # mean of x
             means = np.asarray(X.mean(axis=0)).ravel()
@@ -271,7 +270,7 @@ def build_cv_dataloaders(
 
     # Create pairs of train and val loaders for CV
     folds = create_cv_loaders(datasets["train"], 
-                                dataset["val"], 
+                                datasets["val"], 
                                 n_folds=n_folds, 
                                 batch_size=batch_size, 
                                 shuffle=shuffle, 
