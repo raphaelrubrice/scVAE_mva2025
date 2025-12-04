@@ -89,7 +89,8 @@ def build_collection_from_shards(
         )
 
         X = big.X
-        if sparse.issparse(X):
+        print(X)
+        if scipy.sparse.issparse(X):
             stds = np.asarray(X.std(axis=0)).ravel()
         else:
             stds = X.std(axis=0)
