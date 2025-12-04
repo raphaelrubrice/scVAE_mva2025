@@ -120,7 +120,7 @@ def build_collection_from_shards(
     # ------------------------------------------------------------------
     if filter_genes:
         # This is where it used to crash; now obs_names are globally unique
-        adata = collection.to_adata()
+        collection.to_adata()
 
         X = adata.X
         if scipy.sparse.issparse(X):
