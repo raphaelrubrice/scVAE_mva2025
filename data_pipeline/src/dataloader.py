@@ -66,12 +66,22 @@ def make_converter(label_maps_path: str | Path, one_hot_labels=False):
 #  build collection from shards
 def build_collection_from_shards(
     shard_dir: str | Path = "data/pbmc_processed/shards",
+    filter_genes=False,
+    max_genes=5000,
 ):
     """Load backed .h5ad shards and join into an AnnCollection."""
     shard_dir = Path(shard_dir)
     paths = sorted(shard_dir.glob("*.h5ad"))
     adatas = [ad.read_h5ad(p, backed="r") for p in paths]
     collection = AnnCollection(adatas, join_vars="outer", join_obs="outer", label="dataset")
+    if filter_genes:
+        stds = collection.X.std(axis=0)
+        indices = [(i,std) for i,std in enumerate(stds)]
+        sorted_indices = sorted(indices, key=lambda x: x[1])
+
+        kept_genes = sorted_indices[:max_genes]
+        collection = collection[:,kept_genes]
+        
     print(f"✓ Built AnnCollection with {len(collection.obs)} total cells.")
     return collection
 
@@ -110,11 +120,12 @@ def build_dataloaders(
     train_frac=0.81,
     val_frac=0.09,
     seed=42,
+    **kwargs
 ):
     """Return (train_loader, val_loader, test_loader) PyTorch DataLoaders."""
 
     # Build collection and converter
-    collection = build_collection_from_shards(shard_dir)
+    collection = build_collection_from_shards(shard_dir, **kwargs)
     converter = make_converter(label_maps_path, one_hot_labels=one_hot)
 
     # Split into train/val/test AnnCollectionViews
