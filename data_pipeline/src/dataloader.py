@@ -159,6 +159,7 @@ def build_dataloaders(
     train_frac=0.81,
     val_frac=0.09,
     seed=42,
+    pin_m=False,
     **kwargs
 ):
     """Return (train_loader, val_loader, test_loader) PyTorch DataLoaders."""
@@ -188,7 +189,7 @@ def build_dataloaders(
             batch_size=batch_size,
             shuffle=(split == "train" and shuffle),
             num_workers=num_workers,
-            pin_memory=False,
+            pin_memory=pin_m,
         )
         for split, ds in datasets.items()
     }
@@ -261,6 +262,7 @@ def build_cv_dataloaders(
     train_frac=0.81,
     val_frac=0.09,
     seed=1234,
+    pin_m=False,
     **kwargs
 ):
     """Return (train_loader, val_loader, test_loader) PyTorch DataLoaders."""
@@ -291,13 +293,13 @@ def build_cv_dataloaders(
                                 shuffle=shuffle, 
                                 seed=seed,
                                 num_workers=num_workers,
-                                pin_m=False)
+                                pin_m=pin_m)
     # Test
     test_loader = DataLoader(datasets["test"],
                             batch_size=batch_size,
                             shuffle=False,
                             num_workers=num_workers,
-                            pin_memory=False,
+                            pin_memory=pin_m,
                             )
 
     print(
