@@ -9,6 +9,7 @@ Supports train/val/test split via AnnCollectionView.
 from pathlib import Path
 import numpy as np
 import torch
+import scipy
 import json
 import anndata as ad
 from anndata.experimental import AnnCollection, AnnLoader
