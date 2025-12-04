@@ -143,3 +143,55 @@ def build_dataloaders(
         f"✓ Train={len(datasets['train'])}, Val={len(datasets['val'])}, Test={len(datasets['test'])}"
     )
     return loaders["train"], loaders["val"], loaders["test"]
+
+
+def build_cv_dataloaders(
+    shard_dir="data/pbmc_processed/shards",
+    label_maps_path="data/pbmc_processed/label_maps.json",
+    batch_size=256,
+    n_folds=5,
+    one_hot=False,
+    shuffle=True,
+    num_workers=0,
+    train_frac=0.81,
+    val_frac=0.09,
+    seed=1234,
+):
+    """Return (train_loader, val_loader, test_loader) PyTorch DataLoaders."""
+
+    # Build collection and converter
+    collection = build_collection_from_shards(shard_dir)
+    converter = make_converter(label_maps_path, one_hot_labels=one_hot)
+
+    # Split into train/val/test AnnCollectionViews
+    train_view, val_view, test_view = split_collection(collection, train_frac, val_frac, seed)
+
+    # Wrap each subset in our custom Dataset
+    datasets = {
+        "train": AnnDatasetWrapper(train_view, converter),
+        "val":   AnnDatasetWrapper(val_view, converter),
+        "test":  AnnDatasetWrapper(test_view, converter),
+    }
+
+    # Create pairs of train and val loaders for CV
+    folds = create_cv_loaders(datasets["train"], 
+                                                dataset["val"], 
+                                                n_folds=n_folds, 
+                                                batch_size=batch_size, 
+                                                shuffle=shuffle, 
+                                                seed=seed,
+                                                num_workers=num_workers,
+                                                pin_m=False)
+    # Test
+    test_loader = DataLoader(datasets["test"],
+                            batch_size=batch_size,
+                            shuffle=False,
+                            num_workers=num_workers,
+                            pin_memory=False,
+                            )
+
+    print(
+        f"✓ Train={len(datasets['train'])}, Val={len(datasets['val'])}, Test={len(datasets['test'])}"
+    )
+    print(f"✓ Train/Val CV Folds: {[(len(train),len(val)) for train,val in folds]}")
+    return folds, test_loader

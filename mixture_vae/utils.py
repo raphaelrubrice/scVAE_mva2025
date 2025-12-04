@@ -1,7 +1,14 @@
 import torch
+from torch.utils.data import SubsetRandomSampler, DataLoader
 from collections.abc import Iterable
 from typing import Any
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics.cluster import adjusted_rand_score
+import numpy as np
+from scipy.optimize import linear_sum_assignment
+from tqdm.auto import tqdm
 
+# data type utils
 def check_nonbatch(x: torch.Tensor) -> bool:
     """
     Check if a tensor is 1D or 2D with one row
@@ -97,3 +104,174 @@ def _to_tensor_dict(param_dict: dict[str, Any]
             except Exception as e:
                 raise ValueError(f"Cannot convert key '{key}' to tensor: {e}")
     return tensor_dict
+
+# training utils
+def create_cv_loaders(train_dataset, 
+                    val_dataset, 
+                    n_folds=5, 
+                    batch_size=32, 
+                    shuffle=True, 
+                    seed=1234,
+                    pin_m=False):
+    """
+    Create cross-validation dataloaders from train and validation datasets.
+    """
+    # Combine train + val datasets for CV
+    full_dataset = torch.utils.data.ConcatDataset([train_dataset, 
+                                                    val_dataset])
+    dataset_size = len(full_dataset)
+    indices = list(range(dataset_size))
+
+    if shuffle:
+        np.random.seed(seed)
+        np.random.shuffle(indices)
+
+    fold_sizes = dataset_size // n_folds
+    folds = []
+
+    for fold in range(n_folds):
+        val_start = fold * fold_sizes
+        val_end = val_start + fold_sizes if fold < n_folds - 1 else dataset_size
+
+        val_indices = indices[val_start:val_end]
+        train_indices = indices[:val_start] + indices[val_end:]
+
+        train_sampler = SubsetRandomSampler(train_indices)
+        val_sampler = SubsetRandomSampler(val_indices)
+
+        train_loader = DataLoader(full_dataset, 
+                                    batch_size=batch_size, 
+                                    sampler=train_sampler,
+                                    pin_memory=pin_m)
+        val_loader = DataLoader(full_dataset, 
+                                batch_size=batch_size, 
+                                sampler=val_sampler,
+                                pin_memory=pin_m)
+
+        folds.append((train_loader, val_loader))
+
+    return folds
+
+
+# evaluation utils 
+def match_labels(label_true: np.ndarray[int], label_pred: np.ndarray[int]) -> np.ndarray[int]:
+    """
+    Hungarian algo to identify a mapping between two clustering naming conventions
+    """
+    cm: np.ndarray[int] = confusion_matrix(label_true, label_pred)
+    row_ind, col_ind = linear_sum_assignment(-cm)
+
+    mapping: dict[int: int] = {col: row for row, col in zip(row_ind, col_ind)}
+
+    label_pred_matched: np.ndarray[int] = np.vectorize(lambda x: mapping.get(x, x))(label_pred)
+
+    return label_pred_matched
+
+def compute_radj(model, loader):
+    from mixture_vae.mvae import MixtureVAE
+    # we have 4 levels in the PBMC dataset
+    dset_radj = {i:[] for i in range(1,5)}
+    
+    true_clusters = {i:[] for i in range(1,5)}
+    predicted_clusters = {i:[] for i in range(1,5)}
+    model.eval()
+    with torch.no_grad():
+        for batch in tqdm(loader, total=len(loader)):
+            x = batch[0]
+
+            for key in true_clusters.keys:
+                true_clusters[key].append(batch[key])
+
+                if isinstance(model, MixtureVAE):
+                    if key == 4:
+                        predicted_clusters.append(model.cluster_input(x))
+                    else:
+                        predicted_clusters.append(None)
+                else:
+                    predicted_clusters.append(model.cluster_input(x, at_level=key-1))
+    
+    for key in true_clusters.keys:
+        labels_list = true_clusters[key]
+        if None in labels_list:
+            dset_radj.pop(key, None)
+        else:
+            labels_arr = torch.cat(labels_list, dim=0).cpu().to_numpy()
+            predicted_arr = torch.cat(predicted_clusters[key], dim=0).cpu().to_numpy()
+            predicted_arr = match_labels(labels_arr, predicted_arr)
+
+            # compute ARI for this fold, for this level
+            ari = adjusted_rand_score(labels_arr, predicted_arr)
+            dset_radj[key].append(ari)
+    return dset_radj
+
+def compute_CV_radj(cv_models: list, 
+                    test_loader: DataLoader,
+                    cv_val_loaders: list = None, 
+                    ):
+    """
+    Computes Cross-Validated ARI for the PBMC dataset 
+    """
+    # we have 4 levels in the PBMC dataset
+    test_radj = {i:[] for i in range(1,5)}
+
+    for i,model in enumerate(cv_models):
+        test_radj[i] = compute_radj(model, test_loader)
+
+    test_radj = list(test_radj.values())
+    
+    if cv_val_loaders is not None:
+        val_radj = {i:[] for i in range(1,5)}
+        for model, loader in zip(cv_models, cv_val_loaders):
+            val_radj = compute_radj(model, loader)
+
+        val_radj = {i:(np.mean(aris),np.std(aris)) 
+                for i,aris in val_radj.items()}
+                
+        overall_radj = {i:(np.mean(aris + test_radj[i]),np.std(aris+ test_radj[i])) 
+                    for i,aris in val_radj.items()}
+        return overall_radj, val_radj, test_radj
+    return test_radj
+
+def compute_ll(model, loader):
+    ll_list = []
+    model.eval()
+    with torch.no_grad():
+        for batch in tqdm(loader, total=len(loader)):
+            x = batch[0]
+            per_sample_ll = model.iwae(x)
+            ll_list.append(per_sample_ll)
+    ll_mean = torch.cat(ll_list, dim=0).mean(dim=0)
+    return ll_mean.item()
+
+def compute_CV_ll(cv_models: list, 
+                  test_loader: DataLoader,
+                  cv_val_loaders: list = None, 
+                ):
+    """
+    Computes Cross-Validated Total marginal Log-likelihood
+    using the IWAE estimator.
+    """
+    # we have 4 levels in the PBMC dataset
+    test_ll = {i:[] for i in range(1,5)}
+
+    for i,model in enumerate(cv_models):
+        test_ll[i] = compute_ll(model, test_loader)
+
+    test_ll = list(test_ll.values())
+    
+    if cv_val_loaders is not None:
+        val_ll = {i:[] for i in range(1,5)}
+
+        for model, loader in zip(cv_models, cv_val_loaders):
+            val_ll = compute_ll(model, loader)
+
+        overall_ll = {i:(np.mean(lls + test_ll[i]),np.std(lls+ test_ll[i])) 
+                    for i,lls in val_ll.items()}
+
+        val_ll = {i:(np.mean(lls),np.std(lls)) 
+                    for i,lls in val_ll.items()}
+        return overall_ll, val_ll, test_ll
+    return test_ll
+
+
+
