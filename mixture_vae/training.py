@@ -2,7 +2,7 @@
 import torch
 import numpy as np
 import os, sys
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 # To ensure the custom package is found
 path_to_repo = "/".join(os.path.abspath(__file__).split("/")[:-2])
@@ -128,7 +128,7 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
                        "kl_latent":[],
                        "kl_cluster":[]}
         epoch_clusters = []
-        for batch in dataloader:
+        for batch in tqdm(dataloader, desc=f"Epoch {epoch}", total=len(dataloader)):
             try:
                 x = batch["X"][:, 0, :]
             except:
@@ -172,7 +172,7 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
                             "kl_cluster":[]}
         val_epoch_clusters = []
         with torch.no_grad():
-            for batch in val_dataloader:
+            for batch in tqdm(val_dataloader, desc=f"Epoch {epoch}", total=len(val_dataloader)):
                 try:
                     x = batch["X"][:, 0, :]
                 except:
@@ -273,7 +273,7 @@ def training_momixvae(dataloader: torch.utils.data.DataLoader,
                         "kl_cluster":[]}}
     clusters = {"train": [], 
                 "val":[]}
-    for epoch in range(1,epochs+1):
+    for epoch in tqdm(range(1,epochs+1), desc="TRAINING"):
         beta_kl = all_betas[epoch-1]
 
         # TRAINING
@@ -283,7 +283,7 @@ def training_momixvae(dataloader: torch.utils.data.DataLoader,
                        "kl_latent":[],
                        "kl_cluster":[]}
         epoch_clusters = []
-        for batch in dataloader:
+        for batch in tqdm(dataloader, desc=f"Epoch {epoch}", total=len(dataloader)):
             try:
                 x = batch["X"][:, 0, :]
             except:
@@ -322,7 +322,7 @@ def training_momixvae(dataloader: torch.utils.data.DataLoader,
                             "kl_cluster":[]}
         val_epoch_clusters = []
         with torch.no_grad():
-            for batch in val_dataloader:
+            for batch in tqdm(val_dataloader, desc=f"Epoch {epoch}", total=len(val_dataloader)):
                 try:
                     x = batch["X"][:, 0, :]
                 except:
