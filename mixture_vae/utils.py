@@ -177,9 +177,10 @@ def compute_radj(model, loader):
     model.eval()
     with torch.no_grad():
         for batch in tqdm(loader, total=len(loader)):
-            x = batch[0]
+            x = batch["X"]
 
             for key in true_clusters.keys:
+                key = f"y{key+1}"
                 true_clusters[key].append(batch[key])
 
                 if isinstance(model, MixtureVAE):
@@ -191,6 +192,7 @@ def compute_radj(model, loader):
                     predicted_clusters.append(model.cluster_input(x, at_level=key-1))
     
     for key in true_clusters.keys:
+        key = f"y{key+1}"
         labels_list = true_clusters[key]
         if None in labels_list:
             dset_radj.pop(key, None)

@@ -31,7 +31,8 @@ def get_figure1_data(prior_latent_tag,
     return plot_data
 
 def plot_figure1(cv_dico,
-                test_loader):
+                test_loader,
+                save_path=None):
     """
     Plots the generative and clustering (Total marginal LL and Radj)
     for several models.
@@ -63,7 +64,7 @@ def plot_figure1(cv_dico,
                 hue="Latent Prior", shape="Model")
     plt.title("Generative and Clustering performances")
     
-    if show:
+    if save_path is None:
         plt.tight_layout()
         plt.show()
     else:

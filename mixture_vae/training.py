@@ -170,7 +170,11 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
         val_epoch_clusters = []
         with torch.no_grad():
             for batch in val_dataloader:
-                x = batch[0]
+                if pbmc:
+                    x = batch["X"]
+                else:
+                    x = batch[0]
+                    
                 if model_type == 0:
                     loss, parts, batch_clusters = elbo_mixture_step(model, 
                                                 x, 
