@@ -122,7 +122,7 @@ def build_collection_from_shards(
         adata = collection.to_adata()
 
         X = adata.X
-        if sparse.issparse(X):
+        if scipy.sparse.issparse(X):
             stds = np.asarray(X.std(axis=0)).ravel()
         else:
             stds = X.std(axis=0)
@@ -215,6 +215,52 @@ def build_dataloaders(
     return loaders["train"], loaders["val"], loaders["test"]
 
 
+def create_cv_loaders(train_dataset, 
+                    val_dataset, 
+                    n_folds=5, 
+                    batch_size=32, 
+                    shuffle=True, 
+                    seed=1234,
+                    pin_m=False):
+    """
+    Create cross-validation dataloaders from train and validation datasets.
+    """
+    # Combine train + val datasets for CV
+    full_dataset = torch.utils.data.ConcatDataset([train_dataset, 
+                                                    val_dataset])
+    dataset_size = len(full_dataset)
+    indices = list(range(dataset_size))
+
+    if shuffle:
+        np.random.seed(seed)
+        np.random.shuffle(indices)
+
+    fold_sizes = dataset_size // n_folds
+    folds = []
+
+    for fold in range(n_folds):
+        val_start = fold * fold_sizes
+        val_end = val_start + fold_sizes if fold < n_folds - 1 else dataset_size
+
+        val_indices = indices[val_start:val_end]
+        train_indices = indices[:val_start] + indices[val_end:]
+
+        train_sampler = SubsetRandomSampler(train_indices)
+        val_sampler = SubsetRandomSampler(val_indices)
+
+        train_loader = DataLoader(full_dataset, 
+                                    batch_size=batch_size, 
+                                    sampler=train_sampler,
+                                    pin_memory=pin_m)
+        val_loader = DataLoader(full_dataset, 
+                                batch_size=batch_size, 
+                                sampler=val_sampler,
+                                pin_memory=pin_m)
+
+        folds.append((train_loader, val_loader))
+
+    return folds
+
 def build_cv_dataloaders(
     shard_dir="data/pbmc_processed/shards",
     label_maps_path="data/pbmc_processed/label_maps.json",
@@ -246,13 +292,13 @@ def build_cv_dataloaders(
 
     # Create pairs of train and val loaders for CV
     folds = create_cv_loaders(datasets["train"], 
-                                                dataset["val"], 
-                                                n_folds=n_folds, 
-                                                batch_size=batch_size, 
-                                                shuffle=shuffle, 
-                                                seed=seed,
-                                                num_workers=num_workers,
-                                                pin_m=False)
+                                dataset["val"], 
+                                n_folds=n_folds, 
+                                batch_size=batch_size, 
+                                shuffle=shuffle, 
+                                seed=seed,
+                                num_workers=num_workers,
+                                pin_m=False)
     # Test
     test_loader = DataLoader(datasets["test"],
                             batch_size=batch_size,
