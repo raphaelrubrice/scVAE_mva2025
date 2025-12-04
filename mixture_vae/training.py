@@ -80,133 +80,207 @@ def format_loss(val_epoch_parts, beta_kl):
 
     return f"{recon_str} - {beta_kl:.4f} * ({kl_latent_str} + ({kl_cluster_str}))"
    
-def training_mvae(dataloader: torch.utils.data.DataLoader,
-                  val_dataloader:torch.utils.data.DataLoader,
-                  model: MixtureVAE, 
-                  optimizer: torch.optim.Optimizer, 
-                  epochs: int = 50, 
-                  beta_kl : float = 1,
-                  warmup: int | None = None,
-                  min_beta: float = 0.0,
-                  scheduler: torch.optim.lr_scheduler.LRScheduler = None,
-                  track_clusters: bool = False,
-                  patience: int | None = 5,
-                  tol: float | None = 0.0,
-                  show_loss_every: int = 10,
-                  model_type: 0 | 1 | 2 = 0):
+def training_mvae(
+    dataloader: torch.utils.data.DataLoader,
+    val_dataloader: torch.utils.data.DataLoader,
+    model: MixtureVAE,
+    optimizer: torch.optim.Optimizer,
+    epochs: int = 50,
+    beta_kl: float = 1,
+    warmup: int | None = None,
+    min_beta: float = 0.0,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
+    track_clusters: bool = False,
+    patience: int | None = 5,
+    tol: float | None = 0.0,
+    show_loss_every: int = 10,
+    model_type: 0 | 1 | 2 = 0,
+):
     """
     Training protocol for MixtureVAE models.
     """
-    assert isinstance(model, MixtureVAE) or isinstance(model, ind_MoMVAE), f"This training loop is tailored for MixtureVAE or ind_MoMVAE modules"
+    assert isinstance(model, MixtureVAE) or isinstance(
+        model, ind_MoMVAE
+    ), "This training loop is tailored for MixtureVAE or ind_MoMVAE modules"
+
+    # ------------------------------------------------------------
+    # Device selection: use CUDA if available, else CPU
+    # ------------------------------------------------------------
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    model = model.to(device)
+
+    # ------------------------------------------------------------
+    # Beta schedule
+    # ------------------------------------------------------------
     if warmup is not None:
-        beta_range = (min_beta,beta_kl)
+        beta_range = (min_beta, beta_kl)
         min_beta_range = min(beta_range)
         max_beta_range = max(beta_range)
-        assert min_beta_range >= 0 and max_beta_range >= 0, f"Invalid range: Must be positive. but got {beta_range}"
-        all_betas = np.linspace(min_beta_range, max_beta_range, warmup).tolist() + [max_beta_range] * (epochs - warmup)
+        assert min_beta_range >= 0 and max_beta_range >= 0, (
+            f"Invalid range: Must be positive. but got {beta_range}"
+        )
+        all_betas = (
+            np.linspace(min_beta_range, max_beta_range, warmup).tolist()
+            + [max_beta_range] * (epochs - warmup)
+        )
     else:
         all_betas = [beta_kl] * epochs
+
     # instantiate early stopper
     early_stopper = EarlyStopping(patience, tol) if patience is not None else None
 
-    losses = {"train":[], "val":[]}
-    all_parts = {"train":{"recon":[],
-                        "kl_latent":[],
-                        "kl_cluster":[]},
-                "val":{"recon":[],
-                        "kl_latent":[],
-                        "kl_cluster":[]}}
-    clusters = {"train": [], 
-                "val":[]}
-    for epoch in tqdm(range(1,epochs+1), desc="TRAINING"):
-        beta_kl = all_betas[epoch-1]
-        
+    losses = {"train": [], "val": []}
+    all_parts = {
+        "train": {"recon": [], "kl_latent": [], "kl_cluster": []},
+        "val": {"recon": [], "kl_latent": [], "kl_cluster": []},
+    }
+    clusters = {"train": [], "val": []}
+
+    for epoch in tqdm(range(1, epochs + 1), desc="TRAINING"):
+        beta_kl = all_betas[epoch - 1]
+
+        # ==========================
         # TRAINING
+        # ==========================
         model.train()
-        epoch_loss = 0
-        epoch_parts = {"recon":[],
-                       "kl_latent":[],
-                       "kl_cluster":[]}
+        epoch_loss = 0.0
+        epoch_parts = {"recon": [], "kl_latent": [], "kl_cluster": []}
         epoch_clusters = []
+
         for batch in tqdm(dataloader, desc=f"Epoch {epoch}", total=len(dataloader)):
             try:
                 x = batch["X"][:, 0, :]
-            except:
+            except Exception:
                 x = batch[0]
-            optimizer.zero_grad()
-            
-            if model_type == 0:
-                loss, parts, batch_clusters = elbo_mixture_step(model, 
-                                            x, 
-                                            beta_kl=beta_kl,
-                                            track_clusters=track_clusters)
-            
-            elif model_type == 1:
-                loss, parts, batch_clusters = summed_elbo_mixture_step(model, x,
-                                                                      beta_kl=beta_kl,
-                                                                      track_clusters=track_clusters)
-            
-            loss.backward()
 
+            # move batch to device
+            x = x.to(device)
+
+            optimizer.zero_grad()
+
+            if model_type == 0:
+                loss, parts, batch_clusters = elbo_mixture_step(
+                    model,
+                    x,
+                    beta_kl=beta_kl,
+                    track_clusters=track_clusters,
+                )
+
+            elif model_type == 1:
+                loss, parts, batch_clusters = summed_elbo_mixture_step(
+                    model,
+                    x,
+                    beta_kl=beta_kl,
+                    track_clusters=track_clusters,
+                )
+
+            # backward + step
+            loss.backward()
             optimizer.step()
 
             if scheduler is not None:
                 scheduler.step()
+
+            # scalar loss to python float (works on GPU via .item())
             epoch_loss += loss.item()
+
+            # detach and move parts to CPU as floats/arrays for logging
             for key in epoch_parts.keys():
-                epoch_parts[key].append(parts[key])
+                val = parts[key]
+                if torch.is_tensor(val):
+                    if val.ndim == 0:
+                        val = val.detach().cpu().item()
+                    else:
+                        val = val.detach().cpu().numpy()
+                epoch_parts[key].append(val)
+
+            # keep clusters on GPU during accumulation; move to CPU later
             epoch_clusters.append(batch_clusters)
+
         # register average epoch loss
         epoch_loss = epoch_loss / len(dataloader)
+
         # register average of epoch parts
         for key in epoch_parts.keys():
             epoch_parts[key].append(np.mean(epoch_parts[key]))
-        # register clusters for all inputs seen in epoch
-        epoch_clusters = torch.cat(epoch_clusters, dim=0)
 
+        # register clusters for all inputs seen in epoch, then move to CPU
+        if len(epoch_clusters) > 0:
+            epoch_clusters = torch.cat(epoch_clusters, dim=0).detach().cpu()
+        else:
+            epoch_clusters = torch.empty(0)
+
+        # ==========================
         # VALIDATION
+        # ==========================
         model.eval()
-        val_epoch_loss = 0
-        val_epoch_parts = {"recon":[],
-                            "kl_latent":[],
-                            "kl_cluster":[]}
+        val_epoch_loss = 0.0
+        val_epoch_parts = {"recon": [], "kl_latent": [], "kl_cluster": []}
         val_epoch_clusters = []
+
         with torch.no_grad():
             for batch in tqdm(val_dataloader, desc=f"Epoch {epoch}", total=len(val_dataloader)):
                 try:
                     x = batch["X"][:, 0, :]
-                except:
+                except Exception:
                     x = batch[0]
 
+                # move batch to device
+                x = x.to(device)
+
                 if model_type == 0:
-                    loss, parts, batch_clusters = elbo_mixture_step(model, 
-                                                x, 
-                                                beta_kl=beta_kl,
-                                                track_clusters=track_clusters)
+                    loss, parts, batch_clusters = elbo_mixture_step(
+                        model,
+                        x,
+                        beta_kl=beta_kl,
+                        track_clusters=track_clusters,
+                    )
 
                 elif model_type == 1:
-                    loss, parts, batch_clusters = summed_elbo_mixture_step(model, x,
-                                                                          beta_kl=beta_kl,
-                                                                          track_clusters=track_clusters)
+                    loss, parts, batch_clusters = summed_elbo_mixture_step(
+                        model,
+                        x,
+                        beta_kl=beta_kl,
+                        track_clusters=track_clusters,
+                    )
 
                 val_epoch_loss += loss.item()
+
+                # detach and move parts to CPU as floats/arrays for logging
                 for key in val_epoch_parts.keys():
-                    val_epoch_parts[key].append(parts[key])
+                    val = parts[key]
+                    if torch.is_tensor(val):
+                        if val.ndim == 0:
+                            val = val.detach().cpu().item()
+                        else:
+                            val = val.detach().cpu().numpy()
+                    val_epoch_parts[key].append(val)
+
                 val_epoch_clusters.append(batch_clusters)
+
             # register average epoch loss
             val_epoch_loss = val_epoch_loss / len(val_dataloader)
+
             # register average of epoch parts
             for key in val_epoch_parts.keys():
                 val_epoch_parts[key].append(np.mean(val_epoch_parts[key]))
-            # register clusters for all inputs seen in epoch
-            val_epoch_clusters = torch.cat(val_epoch_clusters, dim=0)
-        
+
+            # register clusters for all inputs seen in epoch (stored on CPU)
+            if len(val_epoch_clusters) > 0:
+                val_epoch_clusters = torch.cat(val_epoch_clusters, dim=0).detach().cpu()
+            else:
+                val_epoch_clusters = torch.empty(0)
+
+        # ==========================
+        # Early stopping / bookkeeping
+        # ==========================
         # if we are out of the warmup zone, we reset the early stopper
-        if warmup is not None and epoch <= warmup:
+        if warmup is not None and epoch <= warmup and early_stopper is not None:
             early_stopper.reset()
 
         # check early stoppage
-        if early_stopper.check_stop(model, val_epoch_loss):
+        if early_stopper is not None and early_stopper.check_stop(model, val_epoch_loss):
             print(f"\nEarly stoppage after {epoch} epochs with patience of {patience}.")
             final_loss_idx = early_stopper.best_loss_idx
             print(f"Best epoch: {final_loss_idx}")
@@ -216,139 +290,229 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
                 final_loss_idx = 2
             losses["train"] = losses["train"][:final_loss_idx]
             losses["val"] = losses["val"][:final_loss_idx]
-            all_parts["train"] = {key:val[:final_loss_idx] for key, val in all_parts["train"].items()}
-            all_parts["val"] = {key:val[:final_loss_idx] for key, val in all_parts["val"].items()}
+            all_parts["train"] = {
+                key: val[:final_loss_idx] for key, val in all_parts["train"].items()
+            }
+            all_parts["val"] = {
+                key: val[:final_loss_idx] for key, val in all_parts["val"].items()
+            }
             clusters["train"] = clusters["train"][:final_loss_idx]
             clusters["val"] = clusters["val"][:final_loss_idx]
-            return early_stopper.best_model, losses, all_parts, clusters, all_betas[:final_loss_idx]
-        
+            return (
+                early_stopper.best_model,
+                losses,
+                all_parts,
+                clusters,
+                all_betas[:final_loss_idx],
+            )
+
+        # store losses/parts/clusters for this epoch
         losses["train"].append(epoch_loss)
         losses["val"].append(val_epoch_loss)
+
         for key in all_parts["train"].keys():
             all_parts["train"][key].append(np.mean(epoch_parts[key]))
         for key in all_parts["val"].keys():
             all_parts["val"][key].append(np.mean(val_epoch_parts[key]))
+
         clusters["train"].append(epoch_clusters)
         clusters["val"].append(val_epoch_clusters)
+
         if epoch == 1:
-            print("Loss printing format:\nepoch x: val = loss (-recon - beta_kl * (kl_latent + kl_cluster)) | train = loss (-recon - beta_kl * (kl_latent + kl_cluster))\n")
+            print(
+                "Loss printing format:\n"
+                "epoch x: val = loss (-recon - beta_kl * (kl_latent + kl_cluster)) | "
+                "train = loss (-recon - beta_kl * (kl_latent + kl_cluster))\n"
+            )
+
         if epoch % show_loss_every == 0:
-            print(f"epoch {epoch}: val = {losses["val"][-1]:.4f} ({format_loss(val_epoch_parts, beta_kl)}) | train = {losses["train"][-1]:.4f} ({format_loss(epoch_parts, beta_kl)})")
+            print(
+                f"epoch {epoch}: "
+                f"val = {losses['val'][-1]:.4f} ({format_loss(val_epoch_parts, beta_kl)}) | "
+                f"train = {losses['train'][-1]:.4f} ({format_loss(epoch_parts, beta_kl)})"
+            )
+
     return model, losses, all_parts, clusters, all_betas
 
-def training_momixvae(dataloader: torch.utils.data.DataLoader,
-                  val_dataloader:torch.utils.data.DataLoader,
-                  model: MoMixVAE, 
-                  optimizer: torch.optim.Optimizer, 
-                  epochs: int = 50, 
-                  beta_kl : float = 1,
-                  warmup: int | None = None,
-                  min_beta: float = 0.0,
-                  scheduler: torch.optim.lr_scheduler.LRScheduler = None,
-                  track_clusters: bool = False,
-                  patience: int | None = 5,
-                  tol: float | None = 0.0,
-                  show_loss_every: int = 10):
+def training_momixvae(
+    dataloader: torch.utils.data.DataLoader,
+    val_dataloader: torch.utils.data.DataLoader,
+    model: MoMixVAE,
+    optimizer: torch.optim.Optimizer,
+    epochs: int = 50,
+    beta_kl: float = 1,
+    warmup: int | None = None,
+    min_beta: float = 0.0,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
+    track_clusters: bool = False,
+    patience: int | None = 5,
+    tol: float | None = 0.0,
+    show_loss_every: int = 10,
+):
     """
     Training protocol for MoMixVAE models.
     """
-    assert isinstance(model, MoMixVAE), f"This training loop is tailored for MoMixVAE modules"
+    assert isinstance(model, MoMixVAE), "This training loop is tailored for MoMixVAE modules"
+
+    # ------------------------------------------------------------------
+    # Device selection: use CUDA if available, else CPU
+    # ------------------------------------------------------------------
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    model = model.to(device)
+
+    # ------------------------------------------------------------------
+    # Beta schedule
+    # ------------------------------------------------------------------
     if warmup is not None:
-        beta_range = (min_beta,beta_kl)
+        beta_range = (min_beta, beta_kl)
         min_beta_range = min(beta_range)
         max_beta_range = max(beta_range)
-        assert min_beta_range >= 0 and max_beta_range >= 0, f"Invalid range: Must be positive. but got {beta_range}"
-        all_betas = np.linspace(min_beta_range, max_beta_range, warmup).tolist() + [max_beta_range] * (epochs - warmup)
+        assert min_beta_range >= 0 and max_beta_range >= 0, (
+            f"Invalid range: Must be positive, but got {beta_range}"
+        )
+        all_betas = (
+            np.linspace(min_beta_range, max_beta_range, warmup).tolist()
+            + [max_beta_range] * (epochs - warmup)
+        )
     else:
         all_betas = [beta_kl] * epochs
+
     # instantiate early stopper
     early_stopper = EarlyStopping(patience, tol) if patience is not None else None
 
-    losses = {"train":[], "val":[]}
-    all_parts = {"train":{"recon":[],
-                        "kl_latent":[],
-                        "kl_cluster":[]},
-                "val":{"recon":[],
-                        "kl_latent":[],
-                        "kl_cluster":[]}}
-    clusters = {"train": [], 
-                "val":[]}
-    for epoch in tqdm(range(1,epochs+1), desc="TRAINING"):
-        beta_kl = all_betas[epoch-1]
+    losses = {"train": [], "val": []}
+    all_parts = {
+        "train": {"recon": [], "kl_latent": [], "kl_cluster": []},
+        "val": {"recon": [], "kl_latent": [], "kl_cluster": []},
+    }
+    clusters = {"train": [], "val": []}
 
+    for epoch in tqdm(range(1, epochs + 1), desc="TRAINING"):
+        beta_kl = all_betas[epoch - 1]
+
+        # ==========================
         # TRAINING
+        # ==========================
         model.train()
-        epoch_loss = 0
-        epoch_parts = {"recon":[],
-                       "kl_latent":[],
-                       "kl_cluster":[]}
+        epoch_loss = 0.0
+        epoch_parts = {"recon": [], "kl_latent": [], "kl_cluster": []}
         epoch_clusters = []
+
         for batch in tqdm(dataloader, desc=f"Epoch {epoch}", total=len(dataloader)):
             try:
                 x = batch["X"][:, 0, :]
-            except:
+            except Exception:
                 x = batch[0]
+
+            # move batch to device
+            x = x.to(device)
 
             optimizer.zero_grad()
 
-            loss, parts, batch_clusters = elbo_MoMix_step(model, 
-                                            x, 
-                                            beta_kl=beta_kl,
-                                            track_clusters=track_clusters)
-            
-            loss.backward()
+            loss, parts, batch_clusters = elbo_MoMix_step(
+                model,
+                x,
+                beta_kl=beta_kl,
+                track_clusters=track_clusters,
+            )
 
+            loss.backward()
             optimizer.step()
 
             if scheduler is not None:
                 scheduler.step()
+
+            # scalar loss to python float (works on GPU via .item())
             epoch_loss += loss.item()
+
+            # detach and move parts to CPU as floats/arrays for logging
             for key in epoch_parts.keys():
-                epoch_parts[key].append(parts[key])
+                val = parts[key]
+                if torch.is_tensor(val):
+                    if val.ndim == 0:
+                        val = val.detach().cpu().item()
+                    else:
+                        val = val.detach().cpu().numpy()
+                epoch_parts[key].append(val)
+
+            # keep clusters on GPU during accumulation, move to CPU later
             epoch_clusters.append(batch_clusters)
+
         # register average epoch loss
         epoch_loss = epoch_loss / len(dataloader)
-        # register average of epoch parts
+
+        # register average of epoch parts (keeps original per-batch list, then appends mean)
         for key in epoch_parts.keys():
             epoch_parts[key].append(np.mean(epoch_parts[key]))
-        # register clusters for all inputs seen in epoch
-        epoch_clusters = torch.cat(epoch_clusters, dim=0)
 
+        # register clusters for all inputs seen in epoch, then move to CPU for storage
+        if len(epoch_clusters) > 0:
+            epoch_clusters = torch.cat(epoch_clusters, dim=0).detach().cpu()
+        else:
+            epoch_clusters = torch.empty(0)
+
+        # ==========================
         # VALIDATION
+        # ==========================
         model.eval()
-        val_epoch_loss = 0
-        val_epoch_parts = {"recon":[],
-                            "kl_latent":[],
-                            "kl_cluster":[]}
+        val_epoch_loss = 0.0
+        val_epoch_parts = {"recon": [], "kl_latent": [], "kl_cluster": []}
         val_epoch_clusters = []
+
         with torch.no_grad():
             for batch in tqdm(val_dataloader, desc=f"Epoch {epoch}", total=len(val_dataloader)):
                 try:
                     x = batch["X"][:, 0, :]
-                except:
+                except Exception:
                     x = batch[0]
-                loss, parts, batch_clusters = elbo_MoMix_step(model, 
-                                                x, 
-                                                beta_kl=beta_kl,
-                                                track_clusters=track_clusters)
+
+                # move batch to device
+                x = x.to(device)
+
+                loss, parts, batch_clusters = elbo_MoMix_step(
+                    model,
+                    x,
+                    beta_kl=beta_kl,
+                    track_clusters=track_clusters,
+                )
+
                 val_epoch_loss += loss.item()
+
+                # detach and move parts to CPU as floats/arrays for logging
                 for key in val_epoch_parts.keys():
-                    val_epoch_parts[key].append(parts[key])
+                    val = parts[key]
+                    if torch.is_tensor(val):
+                        if val.ndim == 0:
+                            val = val.detach().cpu().item()
+                        else:
+                            val = val.detach().cpu().numpy()
+                    val_epoch_parts[key].append(val)
+
                 val_epoch_clusters.append(batch_clusters)
+
             # register average epoch loss
             val_epoch_loss = val_epoch_loss / len(val_dataloader)
+
             # register average of epoch parts
             for key in val_epoch_parts.keys():
                 val_epoch_parts[key].append(np.mean(val_epoch_parts[key]))
-            # register clusters for all inputs seen in epoch
-            val_epoch_clusters = torch.cat(val_epoch_clusters, dim=0)
-        
+
+            # register clusters for all inputs seen in epoch (stored on CPU)
+            if len(val_epoch_clusters) > 0:
+                val_epoch_clusters = torch.cat(val_epoch_clusters, dim=0).detach().cpu()
+            else:
+                val_epoch_clusters = torch.empty(0)
+
+        # ==========================
+        # Early stopping / bookkeeping
+        # ==========================
         # if we are out of the warmup zone, we reset the early stopper
-        if warmup is not None and epoch <= warmup:
+        if warmup is not None and epoch <= warmup and early_stopper is not None:
             early_stopper.reset()
 
         # check early stoppage
-        if early_stopper.check_stop(model, val_epoch_loss):
+        if early_stopper is not None and early_stopper.check_stop(model, val_epoch_loss):
             print(f"\nEarly stoppage after {epoch} epochs with patience of {patience}.")
             final_loss_idx = early_stopper.best_loss_idx
             print(f"Best epoch: {final_loss_idx}")
@@ -358,25 +522,44 @@ def training_momixvae(dataloader: torch.utils.data.DataLoader,
                 final_loss_idx = 2
             losses["train"] = losses["train"][:final_loss_idx]
             losses["val"] = losses["val"][:final_loss_idx]
-            all_parts["train"] = {key:val[:final_loss_idx] for key, val in all_parts["train"].items()}
-            all_parts["val"] = {key:val[:final_loss_idx] for key, val in all_parts["val"].items()}
+            all_parts["train"] = {
+                key: val[:final_loss_idx] for key, val in all_parts["train"].items()
+            }
+            all_parts["val"] = {
+                key: val[:final_loss_idx] for key, val in all_parts["val"].items()
+            }
             clusters["train"] = clusters["train"][:final_loss_idx]
             clusters["val"] = clusters["val"][:final_loss_idx]
             return early_stopper.best_model, losses, all_parts, clusters, all_betas[:final_loss_idx]
-        
+
+        # store losses/parts/clusters for this epoch
         losses["train"].append(epoch_loss)
         losses["val"].append(val_epoch_loss)
+
         for key in all_parts["train"].keys():
             all_parts["train"][key].append(np.mean(epoch_parts[key]))
         for key in all_parts["val"].keys():
             all_parts["val"][key].append(np.mean(val_epoch_parts[key]))
+
         clusters["train"].append(epoch_clusters)
         clusters["val"].append(val_epoch_clusters)
+
         if epoch == 1:
-            print("Loss printing format:\nepoch x: val = loss (-recon - beta_kl * (kl_latent + kl_cluster)) | train = loss (-recon - beta_kl * (kl_latent + kl_cluster))\n")
+            print(
+                "Loss printing format:\n"
+                "epoch x: val = loss (-recon - beta_kl * (kl_latent + kl_cluster)) | "
+                "train = loss (-recon - beta_kl * (kl_latent + kl_cluster))\n"
+            )
+
         if epoch % show_loss_every == 0:
-            print(f"epoch {epoch}: val = {losses["val"][-1]:.4f} ({format_loss(val_epoch_parts, beta_kl)}) | train = {losses["train"][-1]:.4f} ({format_loss(epoch_parts, beta_kl)})")
+            print(
+                f"epoch {epoch}: "
+                f"val = {losses['val'][-1]:.4f} ({format_loss(val_epoch_parts, beta_kl)}) | "
+                f"train = {losses['train'][-1]:.4f} ({format_loss(epoch_parts, beta_kl)})"
+            )
+
     return model, losses, all_parts, clusters, all_betas
+
 
 def retrieve_latent(model, dataloader):
     latent_mix_params = []
