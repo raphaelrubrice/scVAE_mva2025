@@ -91,7 +91,12 @@ def build_collection_from_shards(
         X = big.X
         print(X)
         if scipy.sparse.issparse(X):
-            stds = np.asarray(X.std(axis=0)).ravel()
+            # mean of x
+            means = np.asarray(X.mean(axis=0)).ravel()
+            # mean of x^2
+            means_sq = np.asarray(X.power(2).mean(axis=0)).ravel()
+            # std = sqrt(E[x^2] - (E[x])^2)
+            stds = np.sqrt(means_sq - means**2)
         else:
             stds = X.std(axis=0)
 
