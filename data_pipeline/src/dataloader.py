@@ -103,9 +103,7 @@ def build_collection_from_shards(
             max_genes = big.n_vars
 
         kept_idx = np.argsort(stds)[-max_genes:]  # highest-variance genes
-        print("\nKEPT IDX:", kept_idx)
         kept_genes = big.var_names[kept_idx]
-        print("\nKEPT GENES:", kept_genes)
 
         # 2) Filter each shard individually to those genes
         adatas = [a[:, kept_genes] for a in adatas]
@@ -122,6 +120,8 @@ def build_collection_from_shards(
         f"✓ Built AnnCollection with {collection.n_obs} total cells "
         f"and {collection.n_vars} genes."
     )
+    if filter_genes:
+        return collection, kept_idx
     return collection
 
 # split collection to train/val/test
@@ -164,7 +164,11 @@ def build_dataloaders(
     """Return (train_loader, val_loader, test_loader) PyTorch DataLoaders."""
 
     # Build collection and converter
-    collection = build_collection_from_shards(shard_dir, **kwargs)
+    if "filter_genes" in kwargs.keys():
+        collection, ketp_idx = build_collection_from_shards(shard_dir, **kwargs)
+    else:
+        collection = build_collection_from_shards(shard_dir, **kwargs)
+        kept_idx = None
     converter = make_converter(label_maps_path, one_hot_labels=one_hot)
 
     # Split into train/val/test AnnCollectionViews
@@ -192,6 +196,8 @@ def build_dataloaders(
     print(
         f"✓ Train={len(datasets['train'])}, Val={len(datasets['val'])}, Test={len(datasets['test'])}"
     )
+    if kept_idx is not None:
+        return kept_idx, loaders["train"], loaders["val"], loaders["test"]
     return loaders["train"], loaders["val"], loaders["test"]
 
 
@@ -260,7 +266,11 @@ def build_cv_dataloaders(
     """Return (train_loader, val_loader, test_loader) PyTorch DataLoaders."""
 
     # Build collection and converter
-    collection = build_collection_from_shards(shard_dir, **kwargs)
+    if "filter_genes" in kwargs.keys():
+        collection, ketp_idx = build_collection_from_shards(shard_dir, **kwargs)
+    else:
+        collection = build_collection_from_shards(shard_dir, **kwargs)
+        kept_idx = None
     converter = make_converter(label_maps_path, one_hot_labels=one_hot)
 
     # Split into train/val/test AnnCollectionViews
@@ -294,4 +304,6 @@ def build_cv_dataloaders(
         f"✓ Train={len(datasets['train'])}, Val={len(datasets['val'])}, Test={len(datasets['test'])}"
     )
     print(f"✓ Train/Val CV Folds (n°batches): {[(len(train),len(val)) for train,val in folds]}")
+    if kept_idx is not None:
+        return kept_idx, folds, test_loader
     return folds, test_loader
