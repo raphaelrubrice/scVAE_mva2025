@@ -13,7 +13,7 @@ import scipy
 import json
 import anndata as ad
 from anndata.experimental import AnnCollection, AnnLoader
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, SubsetRandomSampler
 from data_pipeline.src.DatasetWrapper import AnnDatasetWrapper
 
 
