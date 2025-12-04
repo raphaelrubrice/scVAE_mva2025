@@ -165,7 +165,7 @@ def build_dataloaders(
 
     # Build collection and converter
     if "filter_genes" in kwargs.keys():
-        collection, ketp_idx = build_collection_from_shards(shard_dir, **kwargs)
+        collection, kept_idx = build_collection_from_shards(shard_dir, **kwargs)
     else:
         collection = build_collection_from_shards(shard_dir, **kwargs)
         kept_idx = None
@@ -267,7 +267,7 @@ def build_cv_dataloaders(
 
     # Build collection and converter
     if "filter_genes" in kwargs.keys():
-        collection, ketp_idx = build_collection_from_shards(shard_dir, **kwargs)
+        collection, kept_idx = build_collection_from_shards(shard_dir, **kwargs)
     else:
         collection = build_collection_from_shards(shard_dir, **kwargs)
         kept_idx = None
