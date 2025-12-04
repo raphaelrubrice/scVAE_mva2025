@@ -129,7 +129,10 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
                        "kl_cluster":[]}
         epoch_clusters = []
         for batch in dataloader:
-            x = batch[0]
+            try:
+                x = batch["X"][:, 0, :]
+            except:
+                x = batch[0]
             optimizer.zero_grad()
             
             if model_type == 0:
@@ -170,9 +173,9 @@ def training_mvae(dataloader: torch.utils.data.DataLoader,
         val_epoch_clusters = []
         with torch.no_grad():
             for batch in val_dataloader:
-                if pbmc:
-                    x = batch["X"]
-                else:
+                try:
+                    x = batch["X"][:, 0, :]
+                except:
                     x = batch[0]
 
                 if model_type == 0:

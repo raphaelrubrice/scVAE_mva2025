@@ -105,53 +105,6 @@ def _to_tensor_dict(param_dict: dict[str, Any]
                 raise ValueError(f"Cannot convert key '{key}' to tensor: {e}")
     return tensor_dict
 
-# training utils
-def create_cv_loaders(train_dataset, 
-                    val_dataset, 
-                    n_folds=5, 
-                    batch_size=32, 
-                    shuffle=True, 
-                    seed=1234,
-                    pin_m=False):
-    """
-    Create cross-validation dataloaders from train and validation datasets.
-    """
-    # Combine train + val datasets for CV
-    full_dataset = torch.utils.data.ConcatDataset([train_dataset, 
-                                                    val_dataset])
-    dataset_size = len(full_dataset)
-    indices = list(range(dataset_size))
-
-    if shuffle:
-        np.random.seed(seed)
-        np.random.shuffle(indices)
-
-    fold_sizes = dataset_size // n_folds
-    folds = []
-
-    for fold in range(n_folds):
-        val_start = fold * fold_sizes
-        val_end = val_start + fold_sizes if fold < n_folds - 1 else dataset_size
-
-        val_indices = indices[val_start:val_end]
-        train_indices = indices[:val_start] + indices[val_end:]
-
-        train_sampler = SubsetRandomSampler(train_indices)
-        val_sampler = SubsetRandomSampler(val_indices)
-
-        train_loader = DataLoader(full_dataset, 
-                                    batch_size=batch_size, 
-                                    sampler=train_sampler,
-                                    pin_memory=pin_m)
-        val_loader = DataLoader(full_dataset, 
-                                batch_size=batch_size, 
-                                sampler=val_sampler,
-                                pin_memory=pin_m)
-
-        folds.append((train_loader, val_loader))
-
-    return folds
-
 
 # evaluation utils 
 def match_labels(label_true: np.ndarray[int], label_pred: np.ndarray[int]) -> np.ndarray[int]:
