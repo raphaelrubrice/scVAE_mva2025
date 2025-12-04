@@ -75,12 +75,21 @@ def build_collection_from_shards(
     adatas = [ad.read_h5ad(p, backed="r") for p in paths]
     collection = AnnCollection(adatas, join_vars="outer", join_obs="outer", label="dataset")
     if filter_genes:
-        stds = collection.X.std(axis=0)
-        indices = [(i,std) for i,std in enumerate(stds)]
+        # Compute std across all datasets in the collection
+        # AnnCollection exposes .layers and .var_names, not a unified .X
+        # We concatenate across adatas for statistics
+        all_arrays = [adata.X for adata in collection.datasets.values()]
+        stacked = np.vstack(all_arrays)
+
+        stds = stacked.std(axis=0)
+        indices = [(i, std) for i, std in enumerate(stds)]
         sorted_indices = sorted(indices, key=lambda x: x[1])
 
-        kept_genes = sorted_indices[:max_genes]
-        collection = collection[:,kept_genes]
+        kept_gene_indices = [i for i, _ in sorted_indices[:max_genes]]
+
+        print("Before:", collection)
+        collection = collection[:, kept_gene_indices]
+        print("After:", collection)
         
     print(f"✓ Built AnnCollection with {len(collection.obs)} total cells.")
     return collection
