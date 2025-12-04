@@ -199,6 +199,7 @@ def create_cv_loaders(train_dataset,
                     batch_size=32, 
                     shuffle=True, 
                     seed=1234,
+                    num_workers=1,
                     pin_m=False):
     """
     Create cross-validation dataloaders from train and validation datasets.
@@ -229,10 +230,12 @@ def create_cv_loaders(train_dataset,
         train_loader = DataLoader(full_dataset, 
                                     batch_size=batch_size, 
                                     sampler=train_sampler,
+                                    num_workers=num_workers,
                                     pin_memory=pin_m)
         val_loader = DataLoader(full_dataset, 
                                 batch_size=batch_size, 
                                 sampler=val_sampler,
+                                num_workers=num_workers,
                                 pin_memory=pin_m)
 
         folds.append((train_loader, val_loader))
