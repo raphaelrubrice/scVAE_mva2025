@@ -66,31 +66,83 @@ def make_converter(label_maps_path: str | Path, one_hot_labels=False):
 #  build collection from shards
 def build_collection_from_shards(
     shard_dir: str | Path = "data/pbmc_processed/shards",
-    filter_genes=False,
-    max_genes=5000,
-):
-    """Load backed .h5ad shards and join into an AnnCollection."""
+    filter_genes: bool = False,
+    max_genes: int = 5000,
+) -> AnnCollection:
+    """
+    Load .h5ad shards and join into an AnnCollection.
+
+    If `filter_genes=True`, first materialize an in-memory AnnData with
+    globally unique obs_names to compute per-gene std and select the
+    top `max_genes` most variable genes, then apply this filter to the
+    final AnnCollection.
+    """
     shard_dir = Path(shard_dir)
     paths = sorted(shard_dir.glob("*.h5ad"))
-    adatas = [ad.read_h5ad(p, backed="r") for p in paths]
-    collection = AnnCollection(adatas, join_vars="outer", join_obs="outer", label="dataset")
-    
+
+    if not paths:
+        raise FileNotFoundError(f"No .h5ad shards found in {shard_dir}")
+
+    # ------------------------------------------------------------------
+    # 1) Build the collection
+    # ------------------------------------------------------------------
     if filter_genes:
-        # AnnCollection supports .to_adata() to materialize a unified AnnData
-        # This gives you a single .X matrix across all obs/vars
+        # Need to be able to modify obs_names and materialize .X
+        adatas = []
+        for i, p in enumerate(paths):
+            a = ad.read_h5ad(p)  # in-memory
+            # Make obs_names unique *within each shard* if needed
+            if not a.obs_names.is_unique:
+                a.obs_names_make_unique()
+            adatas.append(a)
+
+        collection = AnnCollection(
+            adatas,
+            join_vars="outer",
+            join_obs="outer",
+            label="dataset",
+        )
+
+        # ------------------------------------------------------------------
+        # 2) Materialize a unified AnnData ONLY to compute gene stats
+        # ------------------------------------------------------------------
+        # Now obs_names are unique, so this won't throw InvalidIndexError
         adata = collection.to_adata()
-        stds = adata.X.std(axis=0)
 
-        indices = [(i, std) for i, std in enumerate(stds)]
-        sorted_indices = sorted(indices, key=lambda x: x[1])
+        X = adata.X
+        # std along cells axis
+        if sparse.issparse(X):
+            # sparse.std(axis=0) returns a matrix; convert → 1D array
+            stds = np.asarray(X.std(axis=0)).ravel()
+        else:
+            stds = X.std(axis=0)
 
-        kept_gene_indices = [i for i, _ in sorted_indices[:max_genes]]
+        # Guard against pathological cases
+        if max_genes > adata.n_vars:
+            max_genes = adata.n_vars
 
-        print("Before:", collection)
-        collection = collection[:, kept_gene_indices]
-        print("After:", collection)
-        
-    print(f"✓ Built AnnCollection with {len(collection.obs)} total cells.")
+        # Get indices of top-variance genes
+        # NOTE: argsort ascending → take last `max_genes` for highest variance
+        kept_gene_indices = np.argsort(stds)[-max_genes:]
+        kept_gene_names = adata.var_names[kept_gene_indices]
+
+        print("Before filtering:", collection)
+        # Filter collection by gene *names* (robust to join order)
+        collection = collection[:, kept_gene_names]
+        print("After filtering:", collection)
+
+    else:
+        # Memory-efficient path: keep shards backed, no to_adata() call
+        adatas = [ad.read_h5ad(p, backed="r") for p in paths]
+        collection = AnnCollection(
+            adatas,
+            join_vars="outer",
+            join_obs="outer",
+            label="dataset",
+        )
+
+    print(f"✓ Built AnnCollection with {collection.n_obs} total cells "
+          f"and {collection.n_vars} genes.")
     return collection
 
 # split collection to train/val/test
