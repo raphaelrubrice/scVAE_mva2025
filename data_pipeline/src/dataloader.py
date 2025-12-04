@@ -74,14 +74,13 @@ def build_collection_from_shards(
     paths = sorted(shard_dir.glob("*.h5ad"))
     adatas = [ad.read_h5ad(p, backed="r") for p in paths]
     collection = AnnCollection(adatas, join_vars="outer", join_obs="outer", label="dataset")
+    
     if filter_genes:
-        # Compute std across all datasets in the collection
-        # AnnCollection exposes .layers and .var_names, not a unified .X
-        # We concatenate across adatas for statistics
-        all_arrays = [adata.X for adata in collection.datasets.values()]
-        stacked = np.vstack(all_arrays)
+        # AnnCollection supports .to_adata() to materialize a unified AnnData
+        # This gives you a single .X matrix across all obs/vars
+        adata = collection.to_adata()
+        stds = adata.X.std(axis=0)
 
-        stds = stacked.std(axis=0)
         indices = [(i, std) for i, std in enumerate(stds)]
         sorted_indices = sorted(indices, key=lambda x: x[1])
 
