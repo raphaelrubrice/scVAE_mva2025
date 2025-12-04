@@ -103,7 +103,9 @@ def build_collection_from_shards(
             max_genes = big.n_vars
 
         kept_idx = np.argsort(stds)[-max_genes:]  # highest-variance genes
+        print("\nKEPT IDX:", kept_idx)
         kept_genes = big.var_names[kept_idx]
+        print("\nKEPT GENES:", kept_genes)
 
         # 2) Filter each shard individually to those genes
         adatas = [a[:, kept_genes] for a in adatas]
