@@ -121,19 +121,19 @@ def build_collection_from_shards(
     if filter_genes:
         # This is where it used to crash; now obs_names are globally unique
         collection.to_adata()
-
-        X = adata.X
+        print(collection)
+        X = collection.X
         if scipy.sparse.issparse(X):
             stds = np.asarray(X.std(axis=0)).ravel()
         else:
             stds = X.std(axis=0)
 
-        if max_genes > adata.n_vars:
-            max_genes = adata.n_vars
+        if max_genes > collection.n_vars:
+            max_genes = collection.n_vars
 
         # Take highest-variance genes
         kept_idx = np.argsort(stds)[-max_genes:]
-        kept_gene_names = adata.var_names[kept_idx]
+        kept_gene_names = collection.var_names[kept_idx]
 
         print("Before filtering:", collection)
         collection = collection[:, kept_gene_names]
