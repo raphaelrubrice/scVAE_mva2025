@@ -1,6 +1,5 @@
 # PBMC Pipeline (Download → Combine → Prepare → Train)
 
-This repository provides a clean, reproducible pipeline for preparing 9 PBMC datasets for downstream training with hierarchical cell-type labels.  
 It standardizes raw data, loads each dataset into AnnData, harmonizes labels, builds a combined AnnCollection, and exposes PyTorch-ready DataLoaders.
 
 The pipeline is fully modular:
@@ -13,8 +12,29 @@ The pipeline is fully modular:
 - `config.py` stores URLs + label metadata
 
 You can see examples of workflow in **test_pipeline.ipynb**
-You can see the hierarchy levels I've defined in config.py. 
+You can see the hierarchy levels I've defined in config.py:
+```text
+Stem_cell
+└── CD34_HSC
+    
 
+Non_stem
+├── B_cell
+│   └── B_cell
+│       └── CD19_B_cell
+├── NK_cell
+│   └── NK_cell
+│       └── CD56_NK_cell
+└── T_cell
+    ├── CD4_T
+    │   ├── CD4_CD3_T_helper
+    │   ├── CD4_CD25_Treg
+    │   ├── CD4_CD45RA_CD25neg_naive_T
+    │   └── CD4_CD45RO_memory_T
+    └── CD8_T
+        ├── CD8_cytotoxic_T
+        └── CD8_CD45RA_naive_T
+```
 ###Extracting Labels in Experiments (MOST IMPORTANT) 
 
 ```python
