@@ -11,6 +11,8 @@ if path_to_repo not in sys.path:
 
 from mixture_vae.mvae import MixtureVAE, elbo_mixture_step, MoMixVAE, elbo_MoMix_step, ind_MoMVAE, summed_elbo_mixture_step
 from mixture_vae.viz import plot_loss_components
+from mixture_vae.saving import save_model, load_model
+from mixture_vae.utils import compute_ll
 
 class EarlyStopping(object):
     """
@@ -95,6 +97,8 @@ def training_mvae(
     tol: float | None = 0.0,
     show_loss_every: int = 10,
     model_type: 0 | 1 | 2 = 0,
+    progress_bar=False,
+    save_path=None,
 ):
     """
     Training protocol for MixtureVAE models.
@@ -110,6 +114,13 @@ def training_mvae(
     print(f"Using device: {device}")
     model = model.to(device)
 
+    if not progress_bar:
+        def passthrough(obj, *args, **kwargs):
+            return obj
+        tqdm_func = passthrough
+    else:
+        tqdm_func = tqdm
+
     # ------------------------------------------------------------
     # Beta schedule
     # ------------------------------------------------------------
@@ -124,6 +135,7 @@ def training_mvae(
             np.linspace(min_beta_range, max_beta_range, warmup).tolist()
             + [max_beta_range] * (epochs - warmup)
         )
+        all_betas = all_betas[:epochs]
     else:
         all_betas = [beta_kl] * epochs
 
@@ -148,7 +160,7 @@ def training_mvae(
         epoch_parts = {"recon": [], "kl_latent": [], "kl_cluster": []}
         epoch_clusters = []
 
-        for batch in tqdm(dataloader, desc=f"Epoch {epoch}", total=len(dataloader)):
+        for batch in tqdm_func(dataloader, desc=f"Epoch {epoch}", total=len(dataloader)):
             try:
                 x = batch["X"][:, 0, :]
             except Exception:
@@ -220,7 +232,7 @@ def training_mvae(
         val_epoch_clusters = []
 
         with torch.no_grad():
-            for batch in tqdm(val_dataloader, desc=f"Epoch {epoch}", total=len(val_dataloader)):
+            for batch in tqdm_func(val_dataloader, desc=f"Epoch {epoch}", total=len(val_dataloader)):
                 try:
                     x = batch["X"][:, 0, :]
                 except Exception:
@@ -298,6 +310,12 @@ def training_mvae(
             }
             clusters["train"] = clusters["train"][:final_loss_idx]
             clusters["val"] = clusters["val"][:final_loss_idx]
+
+            # saving
+            if save_path is not None:
+                print(f"\nSaving model..")
+                save_model(early_stopper.best_model, path=save_path)
+
             return (
                 early_stopper.best_model,
                 losses,
@@ -331,6 +349,11 @@ def training_mvae(
                 f"val = {losses['val'][-1]:.4f} ({format_loss(val_epoch_parts, beta_kl)}) | "
                 f"train = {losses['train'][-1]:.4f} ({format_loss(epoch_parts, beta_kl)})"
             )
+    
+    # saving
+    if save_path is not None:
+        print(f"\nSaving model..")
+        save_model(model, path=save_path)
 
     return model, losses, all_parts, clusters, all_betas
 
@@ -348,6 +371,8 @@ def training_momixvae(
     patience: int | None = 5,
     tol: float | None = 0.0,
     show_loss_every: int = 10,
+    progress_bar=False,
+    save_path=None,
 ):
     """
     Training protocol for MoMixVAE models.
@@ -361,6 +386,13 @@ def training_momixvae(
     print(f"Using device: {device}")
     model = model.to(device)
 
+    if not progress_bar:
+        def passthrough(obj, *args, **kwargs):
+            return obj
+        tqdm_func = passthrough
+    else:
+        tqdm_func = tqdm
+    
     # ------------------------------------------------------------------
     # Beta schedule
     # ------------------------------------------------------------------
@@ -375,6 +407,7 @@ def training_momixvae(
             np.linspace(min_beta_range, max_beta_range, warmup).tolist()
             + [max_beta_range] * (epochs - warmup)
         )
+        all_betas = all_betas[:epochs]
     else:
         all_betas = [beta_kl] * epochs
 
@@ -399,7 +432,7 @@ def training_momixvae(
         epoch_parts = {"recon": [], "kl_latent": [], "kl_cluster": []}
         epoch_clusters = []
 
-        for batch in tqdm(dataloader, desc=f"Epoch {epoch}", total=len(dataloader)):
+        for batch in tqdm_func(dataloader, desc=f"Epoch {epoch}", total=len(dataloader)):
             try:
                 x = batch["X"][:, 0, :]
             except Exception:
@@ -461,7 +494,7 @@ def training_momixvae(
         val_epoch_clusters = []
 
         with torch.no_grad():
-            for batch in tqdm(val_dataloader, desc=f"Epoch {epoch}", total=len(val_dataloader)):
+            for batch in tqdm_func(val_dataloader, desc=f"Epoch {epoch}", total=len(val_dataloader)):
                 try:
                     x = batch["X"][:, 0, :]
                 except Exception:
@@ -530,6 +563,12 @@ def training_momixvae(
             }
             clusters["train"] = clusters["train"][:final_loss_idx]
             clusters["val"] = clusters["val"][:final_loss_idx]
+
+            # saving
+            if save_path is not None:
+                print(f"\nSaving model..")
+                save_model(early_stopper.best_model, path=save_path)
+
             return early_stopper.best_model, losses, all_parts, clusters, all_betas[:final_loss_idx]
 
         # store losses/parts/clusters for this epoch
@@ -558,6 +597,11 @@ def training_momixvae(
                 f"train = {losses['train'][-1]:.4f} ({format_loss(epoch_parts, beta_kl)})"
             )
 
+    # saving
+    if save_path is not None:
+        print(f"\nSaving model..")
+        save_model(model, path=save_path)
+        
     return model, losses, all_parts, clusters, all_betas
 
 
@@ -606,7 +650,7 @@ if __name__ == "__main__":
     from mixture_vae.distributions import NormalDistribution, UniformDistribution, NegativeBinomial
 
     parser = ArgumentParser()
-    parser.add_argument("--model", type=int, help="Model type")
+    parser.add_argument("--model", default=0, type=int, help="Model type")
 
     args = parser.parse_args()
     model_type = args.model
@@ -626,9 +670,8 @@ if __name__ == "__main__":
     # Problem setup
     input_dim = 5 # 5 genes
     hidden_dim = 16 # 8 hidden neurons per layer
-    n_components = 3 # 3 clusters are assumed
     latent_dim = 2 # 2 dimension latent space
-    
+
     # Prior on latent: Standard Gaussian in R2
     mu = torch.zeros((1,latent_dim))
     std = torch.ones((1,latent_dim))
@@ -641,13 +684,6 @@ if __name__ == "__main__":
     prior_input = NegativeBinomial({"p":p,
                                     "r":r})
 
-    # Prior on cluster repartitions (mixture): Assume balanced 
-    # cluster classes = Uniform on [0,1]
-    a = torch.zeros((1,n_components))
-    b = torch.ones((1,n_components))
-    prior_categorical = UniformDistribution({"a":a, 
-                                             "b":b})
-
     # Posterior on latent: Gaussian on R2 
     # (here assumed posterior = assumed prior 
     # but it could have been differnet)
@@ -657,6 +693,14 @@ if __name__ == "__main__":
                                            "std":std})
     
     if model_type == 0:
+        n_components = 3 # 3 clusters are assumed
+        # Prior on cluster repartitions (mixture): Assume balanced 
+        # cluster classes = Uniform on [0,1]
+        a = torch.zeros((1,n_components))
+        b = torch.ones((1,n_components))
+        prior_categorical = UniformDistribution({"a":a, 
+                                                "b":b})
+    
         # Instantiate MixtureVAE
         model = MixtureVAE(
             input_dim=input_dim,
@@ -670,6 +714,16 @@ if __name__ == "__main__":
         )
 
     if model_type == 1:
+        # Prior on cluster repartitions (mixture): Assume balanced 
+        # cluster classes = Uniform on [0,1]
+        cat_priors = {}
+        for n_components in [2, 4, 8]:
+            a = torch.zeros((1,n_components))
+            b = torch.ones((1,n_components))
+            prior_categorical = UniformDistribution({"a":a, 
+                                                    "b":b})
+            cat_priors[n_components] = prior_categorical
+        
         # Instatiate ind_MoMVAE
         model = ind_MoMVAE(
             PARAMS = [
@@ -679,7 +733,7 @@ if __name__ == "__main__":
             "n_layers": 1,
             "prior_latent": prior_latent,
             "prior_input": prior_input,
-            "prior_categorical": prior_categorical,
+            "prior_categorical": cat_priors[n_components],
             "posterior_latent": posterior_latent} for n_components in [2, 4, 8]]
         )
         
@@ -690,6 +744,8 @@ if __name__ == "__main__":
     WARMUP_BETA = int(0.2*EPOCHS)
     PATIENCE = 5
     TOL = 5e-3
+
+    save_path = f"./model_{model.__class__.__name__}.ckpt"
 
     model, losses, parts, clusters, all_betas = training_mvae(
         dataloader,
@@ -704,14 +760,20 @@ if __name__ == "__main__":
         show_loss_every=1,
         model_type=model_type,
         track_clusters=True,
+        save_path=save_path
     )
+
+    print("Loading model..")
+    model = load_model(save_path)
+    print("Testing loaded model")
+    compute_ll(model, val_dataloader)
 
     # plot training and validation losses
     plot_loss_components(parts["train"], 
                          parts["val"], 
                          all_betas, 
                          title="Loss Breakdown",
-                         save_path="./toy_losses.pdf")
+                         save_path=f"./{model.__class__.__name__}toy_losses.pdf")
     
     # # plot evolution of clusters across epochs
     # plot_clusters(clusters["train"],

@@ -11,6 +11,8 @@ from mixture_vae.distributions import NormalDistribution, UniformDistribution, N
 from mixture_vae.mvae import MoMixVAE
 from mixture_vae.training import training_momixvae
 from mixture_vae.viz import plot_loss_components
+from mixture_vae.saving import load_model
+from mixture_vae.utils import compute_ll
 
 if __name__ == "__main__":
     # ensures the working dir is that of the file
@@ -91,6 +93,7 @@ if __name__ == "__main__":
     PATIENCE = 5
     TOL = 5e-3
 
+    save_path = f"./model_{model.__class__.__name__}.ckpt"
     model, losses, parts, clusters, all_betas = training_momixvae(
         dataloader,
         val_dataloader,
@@ -103,7 +106,13 @@ if __name__ == "__main__":
         tol=TOL,
         show_loss_every=1,
         track_clusters=True,
+        save_path=save_path
     )
+
+    print("Loading model..")
+    model = load_model(save_path)
+    print("Testing loaded model")
+    compute_ll(model, val_dataloader)
 
     # plot training and validation losses
     plot_loss_components(parts["train"], 
