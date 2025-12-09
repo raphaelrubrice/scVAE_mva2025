@@ -122,36 +122,54 @@ def match_labels(label_true: np.ndarray[int], label_pred: np.ndarray[int]) -> np
 
 def compute_radj(model, loader):
     from mixture_vae.mvae import MixtureVAE
-    # we have 4 levels in the PBMC dataset
-    dset_radj = {i:[] for i in range(1,5)}
+    n_levels = model.n_levels
     
-    true_clusters = {i:[] for i in range(1,5)}
-    predicted_clusters = {i:[] for i in range(1,5)}
+    dset_radj = {i:[] for i in range(1,n_levels+1)}
+    
+    true_clusters = {i:[] for i in range(1,n_levels+1)}
+    predicted_clusters = {i:[] for i in range(1,n_levels+1)}
     model.eval()
     with torch.no_grad():
-        for batch in tqdm(loader, total=len(loader)):
-            x = batch["X"]
+        batch = next(iter(loader))
+        try:
+            x = batch["X"][:, 0, :]
+            pbmc = True
+        except Exception:
+            pbmc = False
 
-            for key in true_clusters.keys:
-                key = f"y{key+1}"
+        for batch in tqdm(loader, total=len(loader)):
+            if pbmc:
+                x = batch["X"][:, 0, :]
+            else:
+                x = batch[0]
+
+            for key in true_clusters.keys():
+                if pbmc:
+                    key = f"y{key+1}"
+
                 true_clusters[key].append(batch[key])
 
                 if isinstance(model, MixtureVAE):
-                    if key == 4:
-                        predicted_clusters.append(model.cluster_input(x))
+                    if key == len(true_clusters.keys()):
+                        predicted_clusters[key].append(model.cluster_input(x))
                     else:
-                        predicted_clusters.append(None)
+                        predicted_clusters[key].append(None)
                 else:
-                    predicted_clusters.append(model.cluster_input(x, at_level=key-1))
+                    if pbmc:
+                        key = int(key[key.index("y")+1:])
+                    predicted_clusters[key].append(model.cluster_input(x, at_level=key-1))
     
-    for key in true_clusters.keys:
-        key = f"y{key+1}"
+    for key in true_clusters.keys():
+        if pbmc:
+            key = f"y{key+1}"
+            true_clusters[key].append(batch[key])
+        
         labels_list = true_clusters[key]
         if None in labels_list:
             dset_radj.pop(key, None)
         else:
-            labels_arr = torch.cat(labels_list, dim=0).cpu().to_numpy()
-            predicted_arr = torch.cat(predicted_clusters[key], dim=0).cpu().to_numpy()
+            labels_arr = torch.cat(labels_list, dim=0).detach().cpu().numpy().ravel()
+            predicted_arr = torch.cat(predicted_clusters[key], dim=0).detach().cpu().numpy().ravel()
             predicted_arr = match_labels(labels_arr, predicted_arr)
 
             # compute ARI for this fold, for this level

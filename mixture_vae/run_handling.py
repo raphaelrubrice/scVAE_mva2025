@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 import os, sys
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset, Subset
+from sklearn.model_selection import KFold
 from tqdm.auto import tqdm
 
 # To ensure the custom package is found
@@ -14,7 +15,7 @@ from mixture_vae.mvae import MixtureVAE, ind_MoMVAE, MoMixVAE
 from mixture_vae.distributions import NormalDistribution, UniformDistribution, NegativeBinomial, Poisson, Student
 from mixture_vae.training import training_mvae, training_momixvae
 from mixture_vae.utils import compute_CV_ll, compute_CV_radj
-from mixture_vae.viz import plot_loss_components
+from mixture_vae.viz import plot_loss_components, plot_latent
 
 MODELS = {
     "MixtureVAE": MixtureVAE, 
@@ -230,7 +231,8 @@ def instantiate_model(config, train_loader, device):
 def run_training(config: dict, 
                  train_loader: DataLoader, 
                  val_loader: DataLoader, 
-                 plot_losses=True):
+                 plot_losses=True,
+                 plot_latent_space=False):
     """
     Orchestrates the training process based on a configuration dictionary.
     
@@ -305,28 +307,51 @@ def run_training(config: dict,
         "clusters": clusters,
         "betas": betas
     }
+    
+    model_parent_folder = "/".join(config["save_path"].split("/")[:-2])
     if plot_losses:
         plot_loss_components(results["parts"]["train"], 
                          results["parts"]["val"], 
                          results["betas"], 
-                         title="Loss Breakdown",
-                         save_path=f"losses_{run_tag}.pdf")
+                         title=f"Loss Breakdown - {run_tag}",
+                         save_path=model_parent_folder + f"/Plots/losses_{run_tag}.pdf")
+
+    if plot_latent_space:
+        plot_latent(model, 
+                val_loader,
+                level=-1,
+                true_labels=True,
+                label_key=None,
+                title="Latent Space",
+                save_path=model_parent_folder + f"/Plots/true_latent_{run_tag}.pdf")
+        plot_latent(model, 
+                val_loader,
+                level=-1,
+                true_labels=False,
+                label_key=None,
+                title="Latent Space",
+                save_path=model_parent_folder + f"/Plots/model_latent_{run_tag}.pdf")
     return results
 
-def run_cv(config, folds, test_loader=None, plot_losses=True):
+def run_cv(config, folds, test_loader=None, plot_losses=True, in_folder=True):
     results_cv = []
     for fold in tqdm(list(range(len(folds)))):
         train_loader, val_loader = folds[fold]
 
-        config["run_tag"] = f'fold{fold}' + config["run_tag"]
+        config_copy = {key:val for key,val in config.items()}
+        config_copy["run_tag"] = f'cv{fold}_' + config["run_tag"]
 
         if isinstance(config["save_path"], str):
             save_path = config["save_path"]
             splitted = save_path.split("/")
-            save_path = "/".join(splitted) + f'/fold{fold}' + splitted[-1]
-            config["save_path"] = save_path
+            if in_folder:
+                save_path = "/".join(splitted[:-1]) + f'/{config["run_tag"]}/Models/cv{fold}_' + splitted[-1]
+            else:
+                save_path = "/".join(splitted[:-1]) + f'/cv{fold}_' + splitted[-1]
+            print(save_path)
+            config_copy["save_path"] = save_path
 
-        results_cv.append(run_training(config, 
+        results_cv.append(run_training(config_copy, 
                                         train_loader, 
                                         val_loader, 
                                         plot_losses=plot_losses))
@@ -344,21 +369,67 @@ def run_cv(config, folds, test_loader=None, plot_losses=True):
                     "Mean Radj":np.mean(cv_radj),
                     "Std Radj": np.std(cv_radj),
                     }
+        print(pd.DataFrame(metric_res))
         return results_cv, metric_res
     
     return results_cv
+
+def create_folds(dataset: TensorDataset, 
+                 n_splits: int = 5, 
+                 batch_size: int = 64, 
+                 shuffle: bool = False):
+    """
+    Splits a TensorDataset into K folds and returns a list of (train_loader, val_loader) tuples.
+    
+    Args:
+        dataset: The full dataset to split.
+        n_splits: Number of folds (k).
+        batch_size: Batch size for the loaders.
+        shuffle: Whether to shuffle the data before splitting (default False for reproducibility).
+        
+    Returns:
+        List of tuples: [(train_loader_1, val_loader_1), ..., (train_loader_k, val_loader_k)]
+    """
+    kf = KFold(n_splits=n_splits, shuffle=shuffle, random_state=42 if shuffle else None)
+    
+    # Extract indices (assuming dataset is indexable like a TensorDataset)
+    indices = np.arange(len(dataset))
+    
+    folds_loaders = []
+    
+    print(f"Creating {n_splits}-fold cross-validation split...")
+    
+    for fold_idx, (train_indices, val_indices) in enumerate(kf.split(indices)):
+        # Create Subsets for this fold
+        train_subset = Subset(dataset, train_indices)
+        val_subset = Subset(dataset, val_indices)
+        
+        # Create DataLoaders
+        train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True) 
+        val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
+        
+        folds_loaders.append((train_loader, val_loader))
+        
+    return folds_loaders
 
 if __name__ == "__main__":
     file_parent = "/".join(os.path.abspath(__file__).split("/")[:-1])
     os.chdir(file_parent)
              
     X = torch.randint(0, 50, (5000, 5), dtype=torch.float)
+    Y = torch.randint(0, 3, (5000,1), dtype=torch.float)
     X_val = torch.randint(0, 50, (500, 5), dtype=torch.float)
+    Y_val = torch.randint(0, 3, (500,1), dtype=torch.float)
     
-    train_ds = torch.utils.data.TensorDataset(X)
-    val_ds = torch.utils.data.TensorDataset(X_val)
+    train_ds = torch.utils.data.TensorDataset(X, Y)
+    val_ds = torch.utils.data.TensorDataset(X_val, Y_val)
+
+    folds = create_folds(train_ds, 
+                 n_splits=2, 
+                 batch_size=128)
+
     
-    train_loader = DataLoader(train_ds, batch_size=64, shuffle=False)
+    # train_loader = DataLoader(train_ds, batch_size=64, shuffle=False)
     val_loader = DataLoader(val_ds, batch_size=64, shuffle=False)
 
     # --- Experiment 1: MixtureVAE Config ---
@@ -421,7 +492,10 @@ if __name__ == "__main__":
         "save_path": "./momix_vae.ckpt"
     }
 
-    # --- Run ---
-    results_mvae = run_training(config_mvae, train_loader, val_loader)
-    results_momix = run_training(config_momix, train_loader, val_loader)
-    results_indmom = run_training(config_indmom, train_loader, val_loader)
+    # CV
+    cv_mvae = run_cv(config_mvae, folds, val_loader)
+
+    # # --- Run ---
+    # results_mvae = run_training(config_mvae, train_loader, val_loader)
+    # results_momix = run_training(config_momix, train_loader, val_loader)
+    # results_indmom = run_training(config_indmom, train_loader, val_loader)

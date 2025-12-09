@@ -10,7 +10,7 @@ if path_to_repo not in sys.path:
     sys.path.append(path_to_repo)
 
 from mixture_vae.mvae import MixtureVAE, elbo_mixture_step, MoMixVAE, elbo_MoMix_step, ind_MoMVAE, summed_elbo_mixture_step
-from mixture_vae.viz import plot_loss_components
+from mixture_vae.viz import plot_loss_components, plot_latent
 from mixture_vae.saving import save_model, load_model
 from mixture_vae.utils import compute_ll
 
@@ -739,7 +739,7 @@ if __name__ == "__main__":
         
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    EPOCHS = 50
+    EPOCHS = 5
     BETA_KL = 0.5
     WARMUP_BETA = int(0.2*EPOCHS)
     PATIENCE = 5
@@ -775,35 +775,11 @@ if __name__ == "__main__":
                          title="Loss Breakdown",
                          save_path=f"./{model.__class__.__name__}toy_losses.pdf")
     
-    # # plot evolution of clusters across epochs
-    # plot_clusters(clusters["train"],
-    #               clusters["val"],
-    #               title="Cluster evolution",
-    #               save_path="./toy_clusters.pdf")
+    plot_latent(model, 
+                val_dataloader,
+                level=-1,
+                true_labels=False,
+                label_key=None,
+                title="Latent Space",
+                save_path=f"./{model.__class__.__name__}_latent.pdf")
     
-    # # plot latent space and latent params either by 
-    # # considering the mixtured samples or the 
-    # # sample conditioned on their cluster
-    # (tr_latent_mix_params,
-    # tr_latent_mix_samples,
-    # tr_latent_cluster_params,
-    # tr_latent_cluster_samples) = retrieve_latent(model, dataloader)
-    
-    # (val_latent_mix_params,
-    # val_latent_mix_samples,
-    # val_latent_cluster_params,
-    # val_latent_cluster_samples) = retrieve_latent(model, val_dataloader)
-
-    # plot_latent(tr_latent_cluster_params,
-    #             tr_latent_cluster_samples,
-    #             val_latent_cluster_params,
-    #             val_latent_cluster_samples,
-    #             title="Latent conditioned on cluster",
-    #             save_path="./toy_latent_conditioned.pdf")
-    
-    # plot_latent(tr_latent_mix_params,
-    #             tr_latent_mix_samples,
-    #             val_latent_mix_params,
-    #             val_latent_mix_samples,
-    #             title="Latent Mixed",
-    #             save_path="./toy_latent_mixed.pdf")

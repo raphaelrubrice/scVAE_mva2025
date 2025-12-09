@@ -190,7 +190,8 @@ class MixtureVAE(nn.Module):
 
     #     return z, latent_params, cluster_probas, all_z, all_latent
     
-    def encode(self, x):
+    def encode(self, x, at_level=-1): 
+        # at_level exists to simplify compatibility with other models
         BATCH_SIZE = x.size(0)
         # B x n_components
         cluster_probas = self.clustering_block(x)
