@@ -316,3 +316,60 @@ class Poisson(Distribution):
         target_l = target_l.contiguous().view(-1).to(device=device, dtype=dtype)
 
         return in_l * torch.log(1e-8 + in_l / (target_l + 1e-8)) + target_l - in_l
+
+class Student(Distribution):
+    def __init__(self, ref_parameters):
+        super().__init__(ref_parameters)
+        self.parametric_kl = False
+        # Expects: df, mu, scale
+        self.n_params = 3
+
+    def constraints(self, params):
+        """
+        Enforce positivity on Degrees of Freedom (df) and Scale.
+        Assumes order in ref_parameters: {df, mu, scale}
+        """
+        params = params.double()
+        constrained = params.clone()
+        
+        # Dimensions
+        dim_df = self.param_dims[0]
+        dim_mu = self.param_dims[1]
+        dim_scale = self.param_dims[2]
+
+        # 1. df (index 0) must be > 0
+        constrained[:, :dim_df] = F.softplus(params[:, :dim_df]) + 1e-6
+        
+        # 2. mu (index 1) is Real (no constraint needed)
+        
+        # 3. scale (index 2) must be > 0
+        start_scale = dim_df + dim_mu
+        constrained[:, start_scale:] = F.softplus(params[:, start_scale:]) + 1e-6
+        
+        return constrained
+
+    def sample(self, latent_params, batch_size):
+        # Split params
+        df, mu, scale = split_or_validate_features(latent_params, self.param_dims)
+        
+        # PyTorch StudentT supports rsample (reparameterization trick)
+        dist = D.StudentT(df=df, loc=mu, scale=scale)
+        
+        # If latent_params matches batch_size, we just sample once
+        # If latent_params is a single reference (1, D), we expand to batch_size
+        if df.size(0) == 1 and batch_size > 1:
+             return dist.rsample((batch_size,))
+        else:
+             return dist.rsample()
+
+    def log_likelihood(self, x, params):
+        df, mu, scale = split_or_validate_features(params, self.param_dims)
+        dist = D.StudentT(df=df, loc=mu, scale=scale)
+        return dist.log_prob(x)
+
+    def kl_divergence(self, input_params, target_params):
+        """
+        No closed form KL for Student-T. 
+        The Model will fall back to Monte Carlo estimation (log q - log p).
+        """
+        pass
