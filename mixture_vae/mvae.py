@@ -283,7 +283,7 @@ class MixtureVAE(nn.Module):
             cluster_probas, 
             all_z, 
             all_latent
-            ) = self.encode(x)
+            ) = self.encode(batch_x)
             
             batch_size = batch_x.size(0)
             clusters = torch.argmax(cluster_probas,dim=1)
