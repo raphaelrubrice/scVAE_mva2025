@@ -192,7 +192,11 @@ def compute_ll(model, loader):
     model.eval()
     with torch.no_grad():
         for batch in tqdm(loader, total=len(loader)):
-            x = batch[0]
+            try:
+                x = batch["X"][:, 0, :]
+            except Exception:
+                x = batch[0]
+
             per_sample_ll = model.iwae(x)
             ll_list.append(per_sample_ll)
     ll_mean = torch.cat(ll_list, dim=0).mean(dim=0)
@@ -228,5 +232,16 @@ def compute_CV_ll(cv_models: list,
         return overall_ll, val_ll, test_ll
     return test_ll
 
+def make_figure(config):
+    # key = name of the model and posterior
+    # value = list of cross validated model paths to load
 
+    # dict of results used later to build a dataframe with columns:
+    # Model, Posterior latent, IWAE, Radj
+    # for each model 
+    # compute LL across the cv (mean and std)
+    # compute ARI (mean and std)
+    # add it to the dictionary of results
 
+    # return the dataframe of results
+    pass
