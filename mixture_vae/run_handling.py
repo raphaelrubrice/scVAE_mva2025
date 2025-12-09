@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import pandas as pd
 import os, sys
 from torch.utils.data import DataLoader, TensorDataset, Subset
 from sklearn.model_selection import KFold
@@ -361,13 +362,13 @@ def run_cv(config, folds, test_loader=None, plot_losses=True, in_folder=True):
 
         cv_ll = compute_CV_ll(cv_models, test_loader)
         cv_radj = compute_CV_radj(cv_models, test_loader)
-
-        metric_res = {"Model":config["model_type"],
-                    "Posterior latent":config["posterior_latent_dist"],
-                    "Mean IWAE":np.mean(cv_ll),
-                    "Std IWAE": np.std(cv_ll),
-                    "Mean Radj":np.mean(cv_radj),
-                    "Std Radj": np.std(cv_radj),
+    
+        metric_res = {"Model":[config["model_type"]],
+                    "Posterior latent":[config["posterior_latent_dist"]],
+                    "Mean IWAE":[np.mean(cv_ll)],
+                    "Std IWAE": [np.std(cv_ll)],
+                    "Mean Radj":[np.mean(cv_radj)],
+                    "Std Radj": [np.std(cv_radj)],
                     }
         print(pd.DataFrame(metric_res))
         return results_cv, metric_res
@@ -425,7 +426,7 @@ if __name__ == "__main__":
     val_ds = torch.utils.data.TensorDataset(X_val, Y_val)
 
     folds = create_folds(train_ds, 
-                 n_splits=2, 
+                 n_splits=5, 
                  batch_size=128)
 
     

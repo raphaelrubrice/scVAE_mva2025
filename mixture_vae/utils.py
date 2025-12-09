@@ -190,7 +190,7 @@ def compute_CV_radj(cv_models: list,
     for i,model in enumerate(cv_models):
         test_radj[i] = compute_radj(model, test_loader)
 
-    test_radj = list(test_radj.values())
+    test_radj = [list(d.values())[0] for d in test_radj.values()]
     
     if cv_val_loaders is not None:
         val_radj = {i:[] for i in range(1,5)}
