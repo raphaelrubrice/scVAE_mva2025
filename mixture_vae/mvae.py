@@ -154,41 +154,7 @@ class MixtureVAE(nn.Module):
         for param_decoder in self.decoder:
             tensor_list.append(param_decoder(x))
         return torch.cat(tensor_list, dim=1)
-    
-    # def encode(self, x):
-    #     # B x n_components
-    #     cluster_probas = self.clustering_block(x)
 
-    #     # build all n_components one-hots once, 
-    #     # then expand to batch
-    #     eyeK = torch.eye(self.n_components, device=x.device)
-    #     all_z = []
-    #     all_latent = []
-    #     # For each cluster we need to compute the z (mixture)
-    #     for k in range(self.n_components):
-    #         # one hot encoding for the whole batch
-    #         c_k = eyeK[k].expand(x.size(0), -1) # B x n_components
-            
-    #         # add input features
-    #         enc_in = torch.cat([x, c_k], dim=1) # B x (input_dim + n_components)
-
-    #         # get latent dist parameters
-    #         latent_k = self.posterior_latent.constraints(self.compute_encoding_params(enc_in))
-    #         all_latent.append(latent_k) # params for q_k(z|x,c=k)
-
-    #         # sample 1 time for each sample in the batch
-    #         # = get the latent sample under the condition y = k
-    #         z_k = self.posterior_latent.sample(latent_k, x.size(0))
-    #         all_z.append(z_k) # sample from q_k
-
-    #     z_mixture = torch.stack(all_z, dim=1) # B x K x latent_dim
-    #     z = (cluster_probas.unsqueeze(-1) * z_mixture).sum(dim=1) # B x latent_dim
-
-    #     # latent_params: same "mixture-averaged" params (rarely needed downstream)
-    #     lp = torch.stack(all_latent, dim=1)                    # B x K x (Dz * n_params/posterior)
-    #     latent_params = (cluster_probas.unsqueeze(-1) * lp).sum(dim=1)
-
-    #     return z, latent_params, cluster_probas, all_z, all_latent
     
     def encode(self, x, at_level=-1): 
         # at_level exists to simplify compatibility with other models

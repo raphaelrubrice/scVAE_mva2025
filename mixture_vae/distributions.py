@@ -264,25 +264,30 @@ class NegativeBinomial(Distribution):
     def log_likelihood(self, x, params):
         """
         Optimized functional log_prob implementation.
-        Corresponds to the parameterization:
+
+        PyTorch-style parameterization:
         p = sigmoid(logits)
-        P(k) = Gamma(k+r)/(Gamma(k+1)Gamma(r)) * p^r * (1-p)^k
+        P(k) = Gamma(k + r) / (Gamma(k + 1) Gamma(r)) * (1 - p)^r * p^k
         """
         logits, r = split_or_validate_features(params, self.param_dims)
         
-        # log_prob = lgamma(x+r) - lgamma(r) - lgamma(x+1) + r*log(p) + x*log(1-p)
-        # log(p) = log_sigmoid(logits)
-        # log(1-p) = log_sigmoid(-logits)
-        
-        log_unnormalized_prob = (r * F.logsigmoid(logits) + 
-                                 x * F.logsigmoid(-logits))
-        
-        log_normalization = (torch.lgamma(x + r) - 
-                             torch.lgamma(r) - 
-                             torch.lgamma(x + 1))
-        
+        # log_prob = lgamma(x + r) - lgamma(r) - lgamma(x + 1)
+        #            + r * log(1 - p) + x * log(p)
+        # log(p)     = log_sigmoid(logits)
+        # log(1 - p) = log_sigmoid(-logits)
+
+        log_unnormalized_prob = (
+            r * F.logsigmoid(-logits) +  # r * log(1 - p)
+            x * F.logsigmoid(logits)     # x * log(p)
+        )
+
+        log_normalization = (
+            torch.lgamma(x + r) -
+            torch.lgamma(r) -
+            torch.lgamma(x + 1)
+        )
+
         log_p = log_unnormalized_prob + log_normalization
-        
         return log_p
 
     def kl_divergence(self, input_params, target_params):
