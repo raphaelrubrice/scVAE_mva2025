@@ -15,6 +15,7 @@ import anndata as ad
 from anndata.experimental import AnnCollection, AnnLoader
 from torch.utils.data import DataLoader, SubsetRandomSampler
 from data_pipeline.src.DatasetWrapper import AnnDatasetWrapper
+from scanpy.preprocessing import sample
 
 
 def one_hot(idx: np.ndarray, num_classes: int) -> torch.Tensor:
@@ -69,6 +70,8 @@ def build_collection_from_shards(
     shard_dir: str | Path = "data/pbmc_processed/shards",
     filter_genes: bool = False,
     max_genes: int = 5000,
+    downsample: bool = False,
+    frac: float = 0.1,
 ):
     shard_dir = Path(shard_dir)
     paths = sorted(shard_dir.glob("*.h5ad"))
@@ -108,6 +111,10 @@ def build_collection_from_shards(
         # 2) Filter each shard individually to those genes
         adatas = [a[:, kept_genes] for a in adatas]
 
+    if downsample:
+        for adata in adatas:
+            # modif in-place
+            sample(adata, frac=frac)
     # 3) Build AnnCollection from the (optionally filtered) shards
     collection = AnnCollection(
         adatas,
