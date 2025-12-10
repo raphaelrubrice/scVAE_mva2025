@@ -243,41 +243,49 @@ class NegativeBinomial(Distribution):
         super().__init__(ref_parameters)
         self.parametric_kl = False
         self.n_params = 2 # logits, r
-        # logits to avoid issues for loglikelihood when p hits 0 or 1 (-inf ll)
-    
+
     def constraints(self, params):
         params = params.double()
         constrained = params.clone()
-        # ensure positivity on counts
+        # ensure positivity on r
         r_dims = self.param_dims[1]
         logits_dims = self.param_dims[0]
         start, end = logits_dims, r_dims + logits_dims
         constrained[:,start:end] = F.softplus(params[:,start:end]) + 1e-6
         return constrained
-    
+
     def sample(self, latent_params, batch_size):
-        # the NB is only used to generate samples from decoder
-        # output params and the reconstruction loss 
-        # only relies on the parameters so no worries 
-        # about using no reparam trick here 
-        logits, r = split_or_validate_features(latent_params, 
-                                          self.param_dims)
-        NB = torch.distributions.NegativeBinomial(total_count=r, 
-                                                logits=logits)
-        return NB.sample(batch_size)
-    
+        # Sampling is complex for NB, so we keep the object here for safety/correctness
+        # as it is rarely used in the inner training loop (mostly for evaluation).
+        logits, r = split_or_validate_features(latent_params, self.param_dims)
+        NB = torch.distributions.NegativeBinomial(total_count=r, logits=logits)
+        return NB.sample((batch_size,))
+
     def log_likelihood(self, x, params):
-        # NB has a differentiable log likelihood
-        logits, r = split_or_validate_features(params, 
-                                          self.param_dims)
-        NB = torch.distributions.NegativeBinomial(total_count=r, 
-                                                logits=logits)
-        return NB.log_prob(x)
-    
+        """
+        Optimized functional log_prob implementation.
+        Corresponds to the parameterization:
+        p = sigmoid(logits)
+        P(k) = Gamma(k+r)/(Gamma(k+1)Gamma(r)) * p^r * (1-p)^k
+        """
+        logits, r = split_or_validate_features(params, self.param_dims)
+        
+        # log_prob = lgamma(x+r) - lgamma(r) - lgamma(x+1) + r*log(p) + x*log(1-p)
+        # log(p) = log_sigmoid(logits)
+        # log(1-p) = log_sigmoid(-logits)
+        
+        log_unnormalized_prob = (r * F.logsigmoid(logits) + 
+                                 x * F.logsigmoid(-logits))
+        
+        log_normalization = (torch.lgamma(x + r) - 
+                             torch.lgamma(r) - 
+                             torch.lgamma(x + 1))
+        
+        log_p = log_unnormalized_prob + log_normalization
+        
+        return log_p
+
     def kl_divergence(self, input_params, target_params):
-        """
-        No closed form. You need to compute KL using likelihoods directly.
-        """
         pass
 
 class Poisson(Distribution):
@@ -289,87 +297,113 @@ class Poisson(Distribution):
     def constraints(self, params):
         params = params.double()
         constrained = params.clone()
-        # ensure > 0 on lambda
         constrained[:, 0] = F.softplus(params[:, 0]) + 1e-6
         return constrained
 
     def sample(self, latent_params, batch_size):
-        # Same remark as for the NB
         lmbda = split_or_validate_features(latent_params, self.param_dims)
         P = torch.distributions.Poisson(rate=lmbda)
         return P.sample((batch_size,))
 
     def log_likelihood(self, x, params):
-        # Poisson has a differentiable log likelihood
+        """
+        Optimized functional log_prob implementation.
+        log P(x|lambda) = x*log(lambda) - lambda - lgamma(x+1)
+        """
         lmbda = split_or_validate_features(params, self.param_dims)
-        P = torch.distributions.Poisson(rate=lmbda)
-        return P.log_prob(x)
+        
+        # Add epsilon to lambda inside log to avoid NaN if lambda approaches 0
+        # though constraints usually handle this.
+        log_p = x * torch.log(lmbda + 1e-10) - lmbda - torch.lgamma(x + 1)
+        
+        return log_p
 
     def kl_divergence(self, input_params, target_params):
         in_l = split_or_validate_features(input_params, self.param_dims)
         target_l = split_or_validate_features(target_params, self.param_dims)
-
-        # normalize shapes + device/dtype
         device = in_l.device
         dtype = in_l.dtype
         in_l = in_l.contiguous().view(-1).to(device=device, dtype=dtype)
         target_l = target_l.contiguous().view(-1).to(device=device, dtype=dtype)
-
         return in_l * torch.log(1e-8 + in_l / (target_l + 1e-8)) + target_l - in_l
 
 class Student(Distribution):
     def __init__(self, ref_parameters):
         super().__init__(ref_parameters)
         self.parametric_kl = False
-        # Expects: df, mu, scale
-        self.n_params = 3
+        self.n_params = 3 # df, mu, scale
 
     def constraints(self, params):
-        """
-        Enforce positivity on Degrees of Freedom (df) and Scale.
-        Assumes order in ref_parameters: {df, mu, scale}
-        """
         params = params.double()
         constrained = params.clone()
         
-        # Dimensions
         dim_df = self.param_dims[0]
         dim_mu = self.param_dims[1]
-        dim_scale = self.param_dims[2]
-
-        # 1. df (index 0) must be > 0
+        
+        # df > 0
         constrained[:, :dim_df] = F.softplus(params[:, :dim_df]) + 1e-6
-        
-        # 2. mu (index 1) is Real (no constraint needed)
-        
-        # 3. scale (index 2) must be > 0
+        # scale > 0
         start_scale = dim_df + dim_mu
         constrained[:, start_scale:] = F.softplus(params[:, start_scale:]) + 1e-6
         
         return constrained
 
     def sample(self, latent_params, batch_size):
-        # Split params
+        """
+        Optimized reparameterized sampling:
+        X = mu + scale * (Z / sqrt(V/df))
+        Z ~ N(0,1), V ~ Chi2(df)
+        """
         df, mu, scale = split_or_validate_features(latent_params, self.param_dims)
         
-        # PyTorch StudentT supports rsample (reparameterization trick)
-        dist = D.StudentT(df=df, loc=mu, scale=scale)
-        
-        # If latent_params matches batch_size, we just sample once
-        # If latent_params is a single reference (1, D), we expand to batch_size
-        if df.size(0) == 1 and batch_size > 1:
-             return dist.rsample((batch_size,))
+        if check_nonbatch(df):
+            shape = (batch_size, self.sample_dim)
         else:
-             return dist.rsample()
+            shape = tuple(list(latent_params.size())[:-1] + [self.sample_dim])
+            
+        device = df.device
+        dtype = df.dtype
+        
+        # Z ~ Normal(0, 1)
+        z = torch.randn(shape, device=device, dtype=dtype)
+        
+        
+        gamma_dist = D.Gamma(concentration=df / 2.0, rate=0.5)
+        v = gamma_dist.rsample(sample_shape=shape if df.shape[0]==1 else ())
+        # Note: if df has batch dim, rsample handles it.
+        
+        # If df was broadcasted, v will match.
+        
+        x = mu + scale * (z * torch.rsqrt(v / df))
+        return x
 
     def log_likelihood(self, x, params):
+        """
+        Optimized functional log_prob for Student T.
+        log p(x) = log Gamma((v+1)/2) - log Gamma(v/2) - 0.5 log(pi*v) - log(scale)
+                   - (v+1)/2 * log(1 + (1/v)*((x-mu)/scale)^2)
+        """
         df, mu, scale = split_or_validate_features(params, self.param_dims)
-        dist = D.StudentT(df=df, loc=mu, scale=scale)
-        return dist.log_prob(x)
+        
+        # Constants
+        pi = torch.tensor(np.pi, device=x.device, dtype=x.dtype)
+        
+        # Mahalanobis distance squared
+        z = (x - mu) / scale
+        log_term = torch.log1p( (z**2) / df )
+        
+        # Log Norm
+        # lgamma returns log(Gamma(x))
+        log_norm = (torch.lgamma((df + 1) / 2) 
+                    - torch.lgamma(df / 2) 
+                    - 0.5 * torch.log(df * pi) 
+                    - torch.log(scale))
+        
+        log_p = log_norm - 0.5 * (df + 1) * log_term
+        
+        if log_p.dim() > 1:
+            return log_p.sum(dim=1)
+        return log_p
 
     def kl_divergence(self, input_params, target_params):
-        """
-        No closed form KL for Student-T. 
-        The Model will fall back to Monte Carlo estimation (log q - log p).
-        """
         pass

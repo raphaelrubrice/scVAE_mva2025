@@ -157,6 +157,7 @@ def training_mvae(
         # ==========================
         model.train()
         epoch_loss = 0.0
+        # Initialize lists to store detached tensors on GPU
         epoch_parts = {"recon": [], "kl_latent": [], "kl_cluster": []}
         epoch_clusters = []
 
@@ -194,28 +195,38 @@ def training_mvae(
             if scheduler is not None:
                 scheduler.step()
 
-            # scalar loss to python float (works on GPU via .item())
-            epoch_loss += loss.item()
+            # [PATCH APPLIED]
+            # Accumulate loss as a tensor on GPU (detached), convert later
+            epoch_loss += loss.detach()
 
-            # detach and move parts to CPU as floats/arrays for logging
+            # [PATCH APPLIED]
+            # Append detached tensors to list, don't move to CPU yet
             for key in epoch_parts.keys():
                 val = parts[key]
                 if torch.is_tensor(val):
-                    if val.ndim == 0:
-                        val = val.detach().cpu().item()
-                    else:
-                        val = val.detach().cpu().numpy()
-                epoch_parts[key].append(val)
+                    epoch_parts[key].append(val.detach())
+                else:
+                    # Fallback if it's already a float (unlikely given mvae.py)
+                    epoch_parts[key].append(torch.tensor(val, device=device))
 
             # keep clusters on GPU during accumulation; move to CPU later
             epoch_clusters.append(batch_clusters)
 
-        # register average epoch loss
+        # [PATCH APPLIED]
+        # Process accumulations once per epoch (Sync Point)
+        if isinstance(epoch_loss, torch.Tensor):
+             epoch_loss = epoch_loss.item()
         epoch_loss = epoch_loss / len(dataloader)
 
-        # register average of epoch parts
         for key in epoch_parts.keys():
-            epoch_parts[key].append(np.mean(epoch_parts[key]))
+            if len(epoch_parts[key]) > 0:
+                # Stack tensors on GPU, compute mean, then sync to CPU
+                mean_val = torch.stack(epoch_parts[key]).mean().item()
+            else:
+                mean_val = 0.0
+            # Replace list with single-element list containing mean 
+            # (preserves format for format_loss accessing [-1])
+            epoch_parts[key] = [mean_val]
 
         # register clusters for all inputs seen in epoch, then move to CPU
         if len(epoch_clusters) > 0:
@@ -257,26 +268,30 @@ def training_mvae(
                         track_clusters=track_clusters,
                     )
 
-                val_epoch_loss += loss.item()
+                # [PATCH APPLIED]
+                val_epoch_loss += loss.detach()
 
-                # detach and move parts to CPU as floats/arrays for logging
+                # [PATCH APPLIED]
                 for key in val_epoch_parts.keys():
                     val = parts[key]
                     if torch.is_tensor(val):
-                        if val.ndim == 0:
-                            val = val.detach().cpu().item()
-                        else:
-                            val = val.detach().cpu().numpy()
-                    val_epoch_parts[key].append(val)
+                        val_epoch_parts[key].append(val.detach())
+                    else:
+                        val_epoch_parts[key].append(torch.tensor(val, device=device))
 
                 val_epoch_clusters.append(batch_clusters)
 
-            # register average epoch loss
+            # [PATCH APPLIED]
+            if isinstance(val_epoch_loss, torch.Tensor):
+                 val_epoch_loss = val_epoch_loss.item()
             val_epoch_loss = val_epoch_loss / len(val_dataloader)
 
-            # register average of epoch parts
             for key in val_epoch_parts.keys():
-                val_epoch_parts[key].append(np.mean(val_epoch_parts[key]))
+                if len(val_epoch_parts[key]) > 0:
+                    mean_val = torch.stack(val_epoch_parts[key]).mean().item()
+                else:
+                    mean_val = 0.0
+                val_epoch_parts[key] = [mean_val]
 
             # register clusters for all inputs seen in epoch (stored on CPU)
             if len(val_epoch_clusters) > 0:
@@ -429,6 +444,7 @@ def training_momixvae(
         # ==========================
         model.train()
         epoch_loss = 0.0
+        # Initialize lists to store detached tensors on GPU
         epoch_parts = {"recon": [], "kl_latent": [], "kl_cluster": []}
         epoch_clusters = []
 
@@ -456,28 +472,31 @@ def training_momixvae(
             if scheduler is not None:
                 scheduler.step()
 
-            # scalar loss to python float (works on GPU via .item())
-            epoch_loss += loss.item()
+            # [PATCH APPLIED]
+            epoch_loss += loss.detach()
 
-            # detach and move parts to CPU as floats/arrays for logging
+            # [PATCH APPLIED]
             for key in epoch_parts.keys():
                 val = parts[key]
                 if torch.is_tensor(val):
-                    if val.ndim == 0:
-                        val = val.detach().cpu().item()
-                    else:
-                        val = val.detach().cpu().numpy()
-                epoch_parts[key].append(val)
+                    epoch_parts[key].append(val.detach())
+                else:
+                    epoch_parts[key].append(torch.tensor(val, device=device))
 
             # keep clusters on GPU during accumulation, move to CPU later
             epoch_clusters.append(batch_clusters)
 
-        # register average epoch loss
+        # [PATCH APPLIED]
+        if isinstance(epoch_loss, torch.Tensor):
+             epoch_loss = epoch_loss.item()
         epoch_loss = epoch_loss / len(dataloader)
 
-        # register average of epoch parts (keeps original per-batch list, then appends mean)
         for key in epoch_parts.keys():
-            epoch_parts[key].append(np.mean(epoch_parts[key]))
+            if len(epoch_parts[key]) > 0:
+                mean_val = torch.stack(epoch_parts[key]).mean().item()
+            else:
+                mean_val = 0.0
+            epoch_parts[key] = [mean_val]
 
         # register clusters for all inputs seen in epoch, then move to CPU for storage
         if len(epoch_clusters) > 0:
@@ -510,26 +529,30 @@ def training_momixvae(
                     track_clusters=track_clusters,
                 )
 
-                val_epoch_loss += loss.item()
+                # [PATCH APPLIED]
+                val_epoch_loss += loss.detach()
 
-                # detach and move parts to CPU as floats/arrays for logging
+                # [PATCH APPLIED]
                 for key in val_epoch_parts.keys():
                     val = parts[key]
                     if torch.is_tensor(val):
-                        if val.ndim == 0:
-                            val = val.detach().cpu().item()
-                        else:
-                            val = val.detach().cpu().numpy()
-                    val_epoch_parts[key].append(val)
+                        val_epoch_parts[key].append(val.detach())
+                    else:
+                        val_epoch_parts[key].append(torch.tensor(val, device=device))
 
                 val_epoch_clusters.append(batch_clusters)
 
-            # register average epoch loss
+            # [PATCH APPLIED]
+            if isinstance(val_epoch_loss, torch.Tensor):
+                 val_epoch_loss = val_epoch_loss.item()
             val_epoch_loss = val_epoch_loss / len(val_dataloader)
 
-            # register average of epoch parts
             for key in val_epoch_parts.keys():
-                val_epoch_parts[key].append(np.mean(val_epoch_parts[key]))
+                if len(val_epoch_parts[key]) > 0:
+                    mean_val = torch.stack(val_epoch_parts[key]).mean().item()
+                else:
+                    mean_val = 0.0
+                val_epoch_parts[key] = [mean_val]
 
             # register clusters for all inputs seen in epoch (stored on CPU)
             if len(val_epoch_clusters) > 0:

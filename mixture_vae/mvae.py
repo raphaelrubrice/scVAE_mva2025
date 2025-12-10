@@ -362,7 +362,7 @@ def elbo_mixture_step(model: MixtureVAE,
     # params of p(x|z_k)
     all_params_k = model.decode(all_zk) 
     # compute log p(x|z_k)
-    log_px_per_k = model.log_likelihood_input(torch.cat([x]*K), all_params_k) 
+    log_px_per_k = model.log_likelihood_input(x.repeat(K, 1), all_params_k) 
     # sum over features inside = shape B
     log_px_per_k = torch.stack([log_px_per_k[i*BATCH_SIZE:(i+1)*BATCH_SIZE,:] 
                                                  for i in range(K)], dim=1) # [B, K, input_dim]
@@ -910,7 +910,7 @@ def compute_level(level_data):
     # params of p(x|z_k)
     params_comb = model.decode(all_z_comb) 
     # compute log p(x|z_k)
-    log_px_per_combinations = model.log_likelihood_input(torch.cat([x]*level_n_combinations,0), params_comb)
+    log_px_per_combinations = model.log_likelihood_input(x.repeat(level_n_combinations,1), params_comb)
     # We then need reformat to have B x n_combinations x input_dim
     log_px_per_combinations = torch.stack([log_px_per_combinations[i*BATCH_SIZE:(i+1)*BATCH_SIZE,:] 
                                             for i in range(level_n_combinations)], dim=1)
@@ -1004,7 +1004,7 @@ def elbo_MoMix_step(model: MoMixVAE,
             # params of p(x|z_k)
             params_comb = model.decode(all_z_comb) 
             # compute log p(x|z_k)
-            log_px_per_combinations = model.log_likelihood_input(torch.cat([x]*level_n_combinations,0), params_comb)
+            log_px_per_combinations = model.log_likelihood_input(x.repeat(level_n_combinations,1), params_comb)
             # We then need reformat to have B x n_combinations x input_dim
             log_px_per_combinations = torch.stack([log_px_per_combinations[i*BATCH_SIZE:(i+1)*BATCH_SIZE,:] 
                                                  for i in range(level_n_combinations)], dim=1)

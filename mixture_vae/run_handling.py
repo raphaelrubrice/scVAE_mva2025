@@ -370,8 +370,7 @@ def run_cv(config, folds, test_loader=None, plot_losses=True, in_folder=True):
                     "Mean Radj":[np.mean(cv_radj)],
                     "Std Radj": [np.std(cv_radj)],
                     }
-        print(pd.DataFrame(metric_res))
-        return results_cv, metric_res
+        return results_cv, pd.DataFrame(metric_res)
     
     return results_cv
 
