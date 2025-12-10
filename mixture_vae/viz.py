@@ -93,7 +93,7 @@ def plot_latent(model,
                 loader,
                 level=-1,
                 true_labels=False,
-                label_key=None,
+                label_key=4,
                 title="Latent Space",
                 save_path=None):
     """
@@ -104,13 +104,18 @@ def plot_latent(model,
     # 1. Validation & Setup
     device = next(model.parameters()).device
     model.eval()
-    if level == -1:
-        level = model.n_levels - 1
+    
     
     # Warning for MixtureVAE ignoring level
     if isinstance(model, MixtureVAE) and level != -1:
         print(f"Warning: Model is 'MixtureVAE' which does not support other levels than -1. Ignoring level={level} and using standard encoding.")
     
+    if isinstance(model, MixtureVAE):
+      level = label_key if label_key is not None else level
+
+    if level == -1:
+        level = model.n_levels
+
     all_latent = []
     all_labels = []
     
@@ -120,7 +125,8 @@ def plot_latent(model,
         for batch in loader:
             try:
                 x = batch["X"][:, 0, :]
-                y_true = batch[f"y{level+1}"] if len(batch) > 1 else None
+                y_true = batch[f"y{level}"] if len(batch) > 1 else None
+                y_true = torch.argmax(y_true.squeeze(), dim=1)
             except:
                 x = batch[0]
                 y_true = batch[1] if len(batch) > 1 else None
@@ -175,7 +181,7 @@ def plot_latent(model,
 
     # Concatenate all batches
     LATENT = np.concatenate(all_latent, axis=0)
-    labels = np.concatenate(all_labels, axis=0)
+    labels = np.concatenate(all_labels, axis=0).flatten()
     
     # 3. Dimensionality Reduction Logic
     latent_dim = LATENT.shape[1]
@@ -213,9 +219,9 @@ def plot_latent(model,
     for ax, (proj_name, data) in zip(axes, projections.items()):
         
         # Determine axes to plot
-        x_axis = data[:, 0]
-        y_axis = data[:, 1] if data.shape[1] > 1 else np.zeros_like(x_axis) # Handle 1D
-        
+        x_axis = data[:, 0].flatten()
+        y_axis = data[:, 1].flatten() if data.shape[1] > 1 else np.zeros_like(x_axis) # Handle 1D
+      
         sns.scatterplot(
             x=x_axis, 
             y=y_axis, 

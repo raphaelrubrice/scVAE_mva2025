@@ -80,7 +80,7 @@ def format_loss(val_epoch_parts, beta_kl):
 
     kl_cluster_str = f"{kl_cluster:.4f}"
 
-    return f"{recon_str} - {beta_kl:.4f} * ({kl_latent_str} + ({kl_cluster_str}))"
+    return f"{recon_str} + {beta_kl:.4f} * ({kl_latent_str} + ({kl_cluster_str}))"
    
 def training_mvae(
     dataloader: torch.utils.data.DataLoader,
@@ -354,8 +354,8 @@ def training_mvae(
         if epoch == 1:
             print(
                 "Loss printing format:\n"
-                "epoch x: val = loss (-recon - beta_kl * (kl_latent + kl_cluster)) | "
-                "train = loss (-recon - beta_kl * (kl_latent + kl_cluster))\n"
+                "epoch x: val = loss (-recon + beta_kl * (kl_latent + kl_cluster)) | "
+                "train = loss (-recon + beta_kl * (kl_latent + kl_cluster))\n"
             )
 
         if epoch % show_loss_every == 0:

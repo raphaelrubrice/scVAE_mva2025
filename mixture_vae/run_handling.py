@@ -326,14 +326,12 @@ def run_training(config: dict,
                 val_loader,
                 level=-1,
                 true_labels=True,
-                label_key=None,
                 title="Latent Space",
                 save_path=model_parent_folder + f"/Plots/true_latent_{run_tag}.pdf")
         plot_latent(model, 
                 val_loader,
                 level=-1,
                 true_labels=False,
-                label_key=None,
                 title="Latent Space",
                 save_path=model_parent_folder + f"/Plots/model_latent_{run_tag}.pdf")
     return results
