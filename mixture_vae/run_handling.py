@@ -233,7 +233,8 @@ def run_training(config: dict,
                  train_loader: DataLoader, 
                  val_loader: DataLoader, 
                  plot_losses=True,
-                 plot_latent_space=False):
+                 plot_latent_space=False,
+                 **kwargs):
     """
     Orchestrates the training process based on a configuration dictionary.
     
@@ -275,7 +276,8 @@ def run_training(config: dict,
             epochs=epochs, beta_kl=beta_kl, warmup=warmup, 
             patience=patience, tol=tol, 
             model_type=0, # 0 for MixtureVAE
-            track_clusters=track_clusters, save_path=save_path
+            track_clusters=track_clusters, save_path=save_path,
+            **kwargs
         )
         
     elif model_type_str == "ind_MoMVAE":
@@ -285,7 +287,8 @@ def run_training(config: dict,
             epochs=epochs, beta_kl=beta_kl, warmup=warmup, 
             patience=patience, tol=tol, 
             model_type=1, # 1 for ind_MoMVAE
-            track_clusters=track_clusters, save_path=save_path
+            track_clusters=track_clusters, save_path=save_path,
+            **kwargs
         )
         
     elif model_type_str == "MoMixVAE":
@@ -293,7 +296,8 @@ def run_training(config: dict,
             train_loader, val_loader, model, optimizer,
             epochs=epochs, beta_kl=beta_kl, warmup=warmup, 
             patience=patience, tol=tol, 
-            track_clusters=track_clusters, save_path=save_path
+            track_clusters=track_clusters, save_path=save_path,
+            **kwargs
         )
         
     else:
@@ -334,7 +338,7 @@ def run_training(config: dict,
                 save_path=model_parent_folder + f"/Plots/model_latent_{run_tag}.pdf")
     return results
 
-def run_cv(config, folds, test_loader=None, plot_losses=True, in_folder=True):
+def run_cv(config, folds, test_loader=None, plot_losses=True, in_folder=True, **kwargs):
     results_cv = []
     for fold in tqdm(list(range(len(folds)))):
         train_loader, val_loader = folds[fold]
@@ -355,7 +359,8 @@ def run_cv(config, folds, test_loader=None, plot_losses=True, in_folder=True):
         results_cv.append(run_training(config_copy, 
                                         train_loader, 
                                         val_loader, 
-                                        plot_losses=plot_losses))
+                                        plot_losses=plot_losses,
+                                        **kwargs))
     
     if test_loader is not None:
         cv_models = [results_cv[i]["model"] for i in range(len(folds))]
