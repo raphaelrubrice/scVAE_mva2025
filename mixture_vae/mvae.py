@@ -332,7 +332,7 @@ def elbo_mixture_step(model: MixtureVAE,
     # sum over features inside = shape B
     log_px_per_k = torch.stack([log_px_per_k[i*BATCH_SIZE:(i+1)*BATCH_SIZE,:] 
                                                  for i in range(K)], dim=1) # [B, K, input_dim]
-    recon = (cluster_probas.unsqueeze(2) * log_px_per_k).sum(dim=1).mean() # scalar
+    recon = (cluster_probas.unsqueeze(2) * log_px_per_k).sum(dim=1).sum(dim=1).mean() # scalar
     
     # 2) Latent KL: sum_k pi_k * KL(q_k || p)
     all_latent_k = torch.cat([all_latent[k] for k in range(K)])
@@ -882,7 +882,7 @@ def compute_level(level_data):
                                             for i in range(level_n_combinations)], dim=1)
     # sum over features inside = shape B
     # for each combiantion we get the pi_k (logq - log p), then we sum over the combinations and finally we take the Expected value
-    recon = (joint_probas.unsqueeze(2) * log_px_per_combinations).sum(dim=1).mean() # scalar
+    recon = (joint_probas.unsqueeze(2) * log_px_per_combinations).sum(dim=1).sum(dim=1).mean() # scalar
     
     # 2) Latent KL: sum_k pi_k * KL(q_k || p)
     kl_per_combinations = []
@@ -975,8 +975,9 @@ def elbo_MoMix_step(model: MoMixVAE,
             log_px_per_combinations = torch.stack([log_px_per_combinations[i*BATCH_SIZE:(i+1)*BATCH_SIZE,:] 
                                                  for i in range(level_n_combinations)], dim=1)
             # sum over features inside = shape B
-            # for each combiantion we get the pi_k (logq - log p), then we sum over the combinations and finally we take the Expected value
-            recon = recon + (joint_probas.unsqueeze(2) * log_px_per_combinations).sum(dim=1).mean() # scalar
+            # for each combiantion we get the pi_k (logq - log p), then we sum over the combinations
+            # the sum over the features and finally we take the Expected value over the batch
+            recon = recon + (joint_probas.unsqueeze(2) * log_px_per_combinations).sum(dim=1).sum(dim=1).mean() # scalar
             
             # 2) Latent KL: sum_k pi_k * KL(q_k || p)
             kl_per_combinations = []
