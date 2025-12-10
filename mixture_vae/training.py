@@ -161,7 +161,7 @@ def training_mvae(
         epoch_parts = {"recon": [], "kl_latent": [], "kl_cluster": []}
         epoch_clusters = []
 
-        for batch in tqdm_func(dataloader, desc=f"Epoch {epoch}", total=len(dataloader)):
+        for batch in tqdm_func(dataloader, desc=f"Epoch {epoch} (train)", total=len(dataloader)):
             try:
                 x = batch["X"][:, 0, :]
             except Exception:
@@ -243,7 +243,7 @@ def training_mvae(
         val_epoch_clusters = []
 
         with torch.no_grad():
-            for batch in tqdm_func(val_dataloader, desc=f"Epoch {epoch}", total=len(val_dataloader)):
+            for batch in tqdm_func(val_dataloader, desc=f"Epoch {epoch} (val)", total=len(val_dataloader)):
                 try:
                     x = batch["X"][:, 0, :]
                 except Exception:
@@ -448,7 +448,7 @@ def training_momixvae(
         epoch_parts = {"recon": [], "kl_latent": [], "kl_cluster": []}
         epoch_clusters = []
 
-        for batch in tqdm_func(dataloader, desc=f"Epoch {epoch}", total=len(dataloader)):
+        for batch in tqdm_func(dataloader, desc=f"Epoch {epoch} (train)", total=len(dataloader)):
             try:
                 x = batch["X"][:, 0, :]
             except Exception:
@@ -513,7 +513,7 @@ def training_momixvae(
         val_epoch_clusters = []
 
         with torch.no_grad():
-            for batch in tqdm_func(val_dataloader, desc=f"Epoch {epoch}", total=len(val_dataloader)):
+            for batch in tqdm_func(val_dataloader, desc=f"Epoch {epoch} (val)", total=len(val_dataloader)):
                 try:
                     x = batch["X"][:, 0, :]
                 except Exception:

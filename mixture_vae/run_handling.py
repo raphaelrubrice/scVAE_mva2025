@@ -54,10 +54,10 @@ def compute_loader_mean(loader, device):
     total_samples = 0
     
     for batch in loader:
-        if isinstance(batch, (list, tuple)):
+        try:
+            x = batch["X"][:, 0, :]
+        except Exception:
             x = batch[0]
-        else:
-            x = batch
         
         x = x.to(device)
         if sum_x is None:
@@ -338,7 +338,7 @@ def run_training(config: dict,
                 save_path=model_parent_folder + f"/Plots/model_latent_{run_tag}.pdf")
     return results
 
-def run_cv(config, folds, test_loader=None, plot_losses=True, in_folder=True, **kwargs):
+def run_cv(config, folds, test_loader=None, plot_losses=True, plot_latent_space=False, in_folder=True, **kwargs):
     results_cv = []
     for fold in tqdm(list(range(len(folds)))):
         train_loader, val_loader = folds[fold]
@@ -360,6 +360,7 @@ def run_cv(config, folds, test_loader=None, plot_losses=True, in_folder=True, **
                                         train_loader, 
                                         val_loader, 
                                         plot_losses=plot_losses,
+                                        plot_latent_space=plot_latent_space,
                                         **kwargs))
     
     if test_loader is not None:
