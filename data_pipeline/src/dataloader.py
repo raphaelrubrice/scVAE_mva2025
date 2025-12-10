@@ -114,7 +114,7 @@ def build_collection_from_shards(
     if downsample:
         for adata in adatas:
             # modif in-place
-            sample(adata, frac=frac)
+            sample(adata, fraction=frac)
     # 3) Build AnnCollection from the (optionally filtered) shards
     collection = AnnCollection(
         adatas,
