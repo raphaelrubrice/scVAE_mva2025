@@ -105,7 +105,7 @@ def training_mvae(
     """
     assert isinstance(model, MixtureVAE) or isinstance(
         model, ind_MoMVAE
-    ), "This training loop is tailored for MixtureVAE or ind_MoMVAE modules"
+    ), f"This training loop is tailored for MixtureVAE or ind_MoMVAE modules but got {type(model)}"
 
     # ------------------------------------------------------------
     # Device selection: use CUDA if available, else CPU
@@ -805,4 +805,3 @@ if __name__ == "__main__":
                 label_key=None,
                 title="Latent Space",
                 save_path=f"./{model.__class__.__name__}_latent.pdf")
-    

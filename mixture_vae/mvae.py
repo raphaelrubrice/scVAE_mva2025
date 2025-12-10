@@ -244,6 +244,7 @@ class MixtureVAE(nn.Module):
         IWAE from Burga et al. in 2016
         """
         self.eval()
+        print(batch_x.device)
         with torch.no_grad():
             (z, 
             latent_params, 
@@ -297,7 +298,8 @@ class MixtureVAE(nn.Module):
             # Log sum exp trick for stable compute of the likelihood ratios
             logspace_ratio = log_p_x_zy + log_p_z - log_q_z_xy
             sumexp = torch.logsumexp(logspace_ratio, dim=1)
-            return sumexp - torch.log(torch.tensor([N])) # IWAE for each sample in batch_x
+            print(sumexp.device)
+            return sumexp - torch.log(torch.tensor([N], device=sumexp.device)) # IWAE for each sample in batch_x
 
 def elbo_mixture_step(model: MixtureVAE, 
                       x: torch.Tensor, 

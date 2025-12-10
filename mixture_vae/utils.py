@@ -129,6 +129,7 @@ def compute_radj(model, loader):
     true_clusters = {i:[] for i in range(1,n_levels+1)}
     predicted_clusters = {i:[] for i in range(1,n_levels+1)}
     model.eval()
+    device = next(model.parameters()).device
     with torch.no_grad():
         batch = next(iter(loader))
         try:
@@ -143,6 +144,7 @@ def compute_radj(model, loader):
             else:
                 x = batch[0]
 
+            x = x.to(device)
             for key in true_clusters.keys():
                 if pbmc:
                     key = f"y{key+1}"
@@ -208,13 +210,16 @@ def compute_CV_radj(cv_models: list,
 def compute_ll(model, loader):
     ll_list = []
     model.eval()
+    device = next(model.parameters()).device
     with torch.no_grad():
         for batch in tqdm(loader, total=len(loader)):
             try:
                 x = batch["X"][:, 0, :]
             except Exception:
                 x = batch[0]
-
+            print(x.device)
+            print(device)
+            x = x.to(device)
             per_sample_ll = model.iwae(x)
             ll_list.append(per_sample_ll)
     ll_mean = torch.cat(ll_list, dim=0).mean(dim=0)
