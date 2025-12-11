@@ -270,7 +270,7 @@ def run_training(config: dict,
     model_type_str = config["model_type"]
     
     if model_type_str == "MixtureVAE":
-        # model_type=0 corresponds to MixtureVAE in your training_mvae
+        # model_type=0 corresponds to MixtureVAE in training_mvae
         model, losses, parts, clusters, betas = training_mvae(
             train_loader, val_loader, model, optimizer,
             epochs=epochs, beta_kl=beta_kl, warmup=warmup, 
@@ -281,7 +281,7 @@ def run_training(config: dict,
         )
         
     elif model_type_str == "ind_MoMVAE":
-        # model_type=1 corresponds to ind_MoMVAE in your training_mvae
+        # model_type=1 corresponds to ind_MoMVAE in training_mvae
         model, losses, parts, clusters, betas = training_mvae(
             train_loader, val_loader, model, optimizer,
             epochs=epochs, beta_kl=beta_kl, warmup=warmup, 

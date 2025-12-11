@@ -120,9 +120,8 @@ def match_labels(label_true: np.ndarray[int], label_pred: np.ndarray[int]) -> np
 
     return label_pred_matched
 
-def compute_radj(model, loader):
+def compute_radj(model, loader, n_levels):
     from mixture_vae.mvae import MixtureVAE
-    n_levels = model.n_levels
     
     dset_radj = {i:[] for i in range(1,n_levels+1)}
     
@@ -130,6 +129,7 @@ def compute_radj(model, loader):
     predicted_clusters = {i:[] for i in range(1,n_levels+1)}
     model.eval()
     device = next(model.parameters()).device
+    
     with torch.no_grad():
         batch = next(iter(loader))
         try:
@@ -146,14 +146,15 @@ def compute_radj(model, loader):
 
             x = x.to(device)
             for key in true_clusters.keys():
+
                 if pbmc:
                     key = f"y{key+1}" # to access y values
 
                 y = batch[key] # one hot
 
                 if pbmc:
-                    key = int(key[key.index("y")+1:]) # revert back
-
+                    key = int(key[key.index("y")+1:]) -1 # revert back
+                
                 true_clusters[key].append(torch.argmax(y.squeeze(), dim=1)) # ordinal
 
                 if isinstance(model, MixtureVAE):
@@ -181,39 +182,57 @@ def compute_radj(model, loader):
 
 def compute_CV_radj(cv_models: list, 
                     test_loader: DataLoader,
-                    cv_val_loaders: list = None, 
-                    ):
+                    cv_val_loaders: list = None,
+                   ):
     """
-    Computes Cross-Validated ARI for the PBMC dataset 
+    Computes Cross-Validated ARI per hierarchical level.
+
+    Returns:
+      - if cv_val_loaders is None:
+          test_radj: dict[level -> list of ARIs across folds]
+      - else:
+          overall_radj: dict[level -> (mean, std) over (val + test)]
+          val_radj_stats: dict[level -> (mean, std) over val folds]
+          test_radj: dict[level -> list of ARIs across folds]
     """
+    # Infer number of levels
     batch = next(iter(test_loader))
     if isinstance(batch, dict):
         n_levels = len([key for key in batch.keys() if 'y' in key])
     else:
-        # if its not a pbmc like dataloader, no heuristic from the loader
         n_levels = cv_models[0].n_levels
 
-    # Test radj
-    test_radj = {i:[] for i in range(1,n_levels+1)}
+    # Initialize per-level ARI lists for test
+    test_radj = {lvl: [] for lvl in range(1, n_levels + 1)}
 
-    for i,model in enumerate(cv_models):
-        test_radj[i] = compute_radj(model, test_loader)
+    # Compute ARI for each model/fold on the test loader
+    for model in cv_models:
+        dset_radj = compute_radj(model, test_loader, n_levels)  # dict[level -> [ari,...]]
+        for lvl, aris in dset_radj.items():
+            test_radj[lvl].extend(aris)
 
-    test_radj = [list(d.values())[0] for d in test_radj.values()]
-    
-    # If cv validation loaders were provided
     if cv_val_loaders is not None:
-        val_radj = {i:[] for i in range(1,n_levels+1)}
-        for model, loader in zip(cv_models, cv_val_loaders):
-            val_radj = compute_radj(model, loader)
+        # Per-level ARI lists for validation
+        val_radj = {lvl: [] for lvl in range(1, n_levels + 1)}
 
-        val_radj = {i:(np.mean(aris),np.std(aris)) 
-                for i,aris in val_radj.items()}
-                
-        overall_radj = {i:(np.mean(aris + test_radj[i]),np.std(aris+ test_radj[i])) 
-                    for i,aris in val_radj.items()}
-        return overall_radj, val_radj, test_radj
-    
+        for model, loader in zip(cv_models, cv_val_loaders):
+            dset_radj = compute_radj(model, loader, n_levels)
+            for lvl, aris in dset_radj.items():
+                val_radj[lvl].extend(aris)
+
+        # Compute per-level stats
+        val_radj_stats = {}
+        overall_radj = {}
+        for lvl in range(1, n_levels + 1):
+            val_arr = np.asarray(val_radj[lvl], dtype=float)
+            test_arr = np.asarray(test_radj[lvl], dtype=float)
+            all_arr = np.concatenate([val_arr, test_arr])
+
+            val_radj_stats[lvl] = (val_arr.mean(), val_arr.std())
+            overall_radj[lvl] = (all_arr.mean(), all_arr.std())
+
+        return overall_radj, val_radj_stats, test_radj
+
     return test_radj
 
 def compute_ll(model, loader):
