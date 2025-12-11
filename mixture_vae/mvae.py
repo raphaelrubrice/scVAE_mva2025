@@ -298,7 +298,6 @@ class MixtureVAE(nn.Module):
             # Log sum exp trick for stable compute of the likelihood ratios
             logspace_ratio = log_p_x_zy + log_p_z - log_q_z_xy
             sumexp = torch.logsumexp(logspace_ratio, dim=1)
-            print(sumexp.device)
             return sumexp - torch.log(torch.tensor([N], device=sumexp.device)) # IWAE for each sample in batch_x
 
 def elbo_mixture_step(model: MixtureVAE, 
@@ -444,61 +443,6 @@ class ind_MoMVAE(nn.Module):
         if at_level is None:
             at_level = self.n_levels - 1
         return self.branches[at_level].iwae(batch_x)
-        # self.eval()
-        # with torch.no_grad():
-        #     (z, 
-        #     latent_params, 
-        #     cluster_probas, 
-        #     all_z, 
-        #     all_latent
-        #     ) = self.encode(batch_x, at_level=at_level)
-            
-        #     batch_size = batch_x.size(0)
-        #     clusters = torch.argmax(cluster_probas,dim=1)
-
-        #     # fetch latent from the appropriate cluster for each input sample
-        #     selected_latents = torch.cat([all_latent[c][i:i+1,:] 
-        #                                 for i,c in enumerate(clusters)], 
-        #                                 dim=0)
-
-        #     sum_paramdims = selected_latents.size(1)
-        #     latent_params = selected_latents.unsqueeze(1) # batch, 1, sum paramdims
-        #     latent_params = latent_params.expand(batch_size, N, sum_paramdims)
-
-        #     # sample from latent posterior
-        #     posterior_latent = self.branches[at_level].posterior_latent
-        #     sampled_z = posterior_latent.sample(latent_params, batch_size)
-
-        #     # obtain decoder output (parameters of the prior distirbution for each sample)
-        #     latent_dim = self.branches[at_level].latent_dim
-        #     input_params = self.decode(sampled_z.reshape(-1, latent_dim))
-
-        #     # log p(x|z,y)
-        #     # get reference parameters in correct shape
-        #     prior_input = self.branches[at_level].prior_input
-        #     prior_params = prior_input.get_reference_params(batch_x)
-        #     log_p_x_zy = prior_input.log_likelihood(batch_x, 
-        #                                             prior_params)
-        #     log_p_x_zy = log_p_x_zy.sum(dim=1).unsqueeze(1) # sum over data_dim => (batch,1)
-        #     log_p_x_zy = log_p_x_zy.expand(batch_size, N)
-
-        #     # log p(z)
-        #     prior_latent = self.branches[at_level].prior_latent
-        #     prior_latent_params = prior_latent.get_reference_params(sampled_z.view(-1,latent_dim))
-        #     log_p_z = prior_latent.log_likelihood(sampled_z.view(-1,latent_dim), 
-        #                                                prior_latent_params)
-        #     log_p_z = log_p_z.reshape(batch_size, N)
-            
-        #     # log q(z|x,y)
-        #     posterior_latent_params = posterior_latent.get_reference_params(sampled_z.view(-1,latent_dim))
-        #     log_q_z_xy = posterior_latent.log_likelihood(sampled_z.view(-1,latent_dim), 
-        #                                                posterior_latent_params)
-        #     log_q_z_xy = log_q_z_xy.reshape(batch_size, N)
-
-        #     # Log sum exp trick for stable compute of the likelihood ratios
-        #     logspace_ratio = log_p_x_zy + log_p_z - log_q_z_xy
-        #     sumexp = torch.logsumexp(logspace_ratio, dim=1)
-        #     return sumexp - torch.log(torch.tensor([N])) # IWAE for each sample in batch_x
 
 
 class MoMixVAE(nn.Module):
@@ -847,7 +791,7 @@ class MoMixVAE(nn.Module):
             # Log sum exp trick for stable compute of the likelihood ratios
             logspace_ratio = log_p_x_zy + log_p_z - log_q_z_xy
             sumexp = torch.logsumexp(logspace_ratio, dim=1)
-            return sumexp - torch.log(torch.tensor([N])) # IWAE for each sample in batch_x
+            return sumexp - torch.log(torch.tensor([N], device=sumexp.device)) # IWAE for each sample in batch_x
 
             
 
