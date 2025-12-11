@@ -207,7 +207,7 @@ class MixtureVAE(nn.Module):
         if x is None:
             assert cluster_probas is not None, f"Missing cluster_probas: When given no input features you must provide precomputed cluster_probas"
         else:
-            _, _, cluster_probas, _, _ = self.encode(x)
+            cluster_probas = self.encode(x)[2]
         return torch.argmax(cluster_probas, dim=1)
 
     def log_likelihood_input(self, x, params):
@@ -432,7 +432,7 @@ class ind_MoMVAE(nn.Module):
         if x is None:
             assert cluster_probas is not None, f"Missing cluster_probas: When given no input features you must provide precomputed cluster_probas"
         else:
-            _, _, cluster_probas, _, _ = self.encode(x, at_level=at_level)
+            cluster_probas = self.encode(x, at_level=at_level)[2]
         return torch.argmax(cluster_probas, dim=1)
     
     def iwae(self, batch_x, N = 500, at_level=None):
@@ -697,7 +697,7 @@ class MoMixVAE(nn.Module):
         if x is None:
             assert cluster_probas is not None, f"Missing cluster_probas: When given no input features you must provide precomputed cluster_probas"
         else:
-            _, _, cluster_probas, _, _, _ = self.encode(x, at_level=at_level)
+            cluster_probas = self.encode(x, at_level=at_level)[2]
         return torch.argmax(cluster_probas, dim=1)
 
     def log_likelihood_input(self, x, params):
