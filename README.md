@@ -23,3 +23,8 @@ uv venv
 source .venv/bin/activate
 uv sync
 ```
+
+# **Training on PBMC**
+<a target="_blank" href="https://colab.research.google.com/github/raphaelrubrice/scVAE_mva2025/blob/raph/PBMC_experiments.ipynb">
+  <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
+</a>
