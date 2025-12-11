@@ -1,6 +1,7 @@
 from mixture_vae.utils import compute_CV_ll, compute_CV_radj
 import matplotlib.pyplot as plt
 import seaborn as sns
+sns.set_theme("paper")
 import torch
 import numpy as np
 import pandas as pd
