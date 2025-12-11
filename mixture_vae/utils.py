@@ -168,7 +168,7 @@ def compute_radj(model, loader, n_levels):
     for key in true_clusters.keys():
         labels_list = true_clusters[key]
         
-        if None in labels_list or None is in predicted_clusters[key]:
+        if None in labels_list or None in predicted_clusters[key]:
             dset_radj.pop(key, None) # drop where levels were ignored
         else:
             labels_arr = torch.cat(labels_list, dim=0).detach().cpu().numpy().ravel()
