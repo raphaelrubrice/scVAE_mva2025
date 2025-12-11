@@ -150,6 +150,10 @@ def compute_radj(model, loader):
                     key = f"y{key+1}" # to access y values
 
                 y = batch[key] # one hot
+
+                if pbmc:
+                    key = int(key[key.index("y")+1:]) # revert back
+
                 true_clusters[key].append(torch.argmax(y.squeeze(), dim=1)) # ordinal
 
                 if isinstance(model, MixtureVAE):
@@ -158,8 +162,6 @@ def compute_radj(model, loader):
                     else:
                         predicted_clusters[key].append(None)
                 else:
-                    if pbmc:
-                        key = int(key[key.index("y")+1:]) # to access the dict
                     predicted_clusters[key].append(model.cluster_input(x, at_level=key-1))
     
     for key in true_clusters.keys():
