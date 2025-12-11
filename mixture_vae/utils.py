@@ -148,12 +148,12 @@ def compute_radj(model, loader, n_levels):
             for key in true_clusters.keys():
 
                 if pbmc:
-                    key = f"y{key+1}" # to access y values
+                    key = f"y{key}" # to access y values
 
                 y = batch[key] # one hot
 
                 if pbmc:
-                    key = int(key[key.index("y")+1:]) -1 # revert back
+                    key = int(key[key.index("y")+1:]) # revert back
                 
                 true_clusters[key].append(torch.argmax(y.squeeze(), dim=1)) # ordinal
 
