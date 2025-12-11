@@ -114,7 +114,7 @@ def plot_latent(model,
       level = label_key if label_key is not None else level
 
     if level == -1:
-        level = model.n_levels
+        level = model.n_levels - 1
 
     all_latent = []
     all_labels = []

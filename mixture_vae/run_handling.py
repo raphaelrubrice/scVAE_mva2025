@@ -389,13 +389,10 @@ def run_cv(config, folds, test_loader=None,
     # ARI per hierarchical level
     cv_radj = compute_CV_radj(cv_models, test_loader)
 
-    print("CV_LL", cv_ll)
-    print("CV_RADJ", cv_radj)
-    
     # ----- METRIC AGGREGATION -----
     metric_res = {
         "Model": [config["model_type"]],
-        "Posterior latent": [config["posterior_latent_dist"]],
+        "Prior latent": [config["prior_latent_dist"]],
         "Mean IWAE": [np.mean(cv_ll)],
         "Std IWAE":  [np.std(cv_ll)],
     }
