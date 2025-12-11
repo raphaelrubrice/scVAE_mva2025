@@ -336,47 +336,75 @@ def run_training(config: dict,
                 save_path=model_parent_folder + f"/Plots/model_latent_{run_tag}.pdf")
     return results
 
-def run_cv(config, folds, test_loader=None, plot_losses=True, plot_latent_space=False, in_folder=True, **kwargs):
+def run_cv(config, folds, test_loader=None, 
+           plot_losses=True, plot_latent_space=False, 
+           in_folder=True, **kwargs):
+    """
+    Runs cross-validation training over folds, collects metrics,
+    and returns trained models + performance DataFrame (if test set provided).
+    """
     results_cv = []
+
+    # ----- TRAINING LOOP OVER FOLDS -----
     for fold in tqdm(list(range(len(folds)))):
         train_loader, val_loader = folds[fold]
 
-        config_copy = {key:val for key,val in config.items()}
+        # Copy config so each fold has its own run_tag and save_path
+        config_copy = {key: val for key, val in config.items()}
         config_copy["run_tag"] = f'cv{fold}_' + config["run_tag"]
 
+        # Adjust save path
         if isinstance(config["save_path"], str):
             save_path = config["save_path"]
-            splitted = save_path.split("/")
+            parts = save_path.split("/")
             if in_folder:
-                save_path = "/".join(splitted[:-1]) + f'/{config["run_tag"]}/Models/cv{fold}_' + splitted[-1]
+                save_path = "/".join(parts[:-1]) + f'/{config["run_tag"]}/Models/cv{fold}_' + parts[-1]
             else:
-                save_path = "/".join(splitted[:-1]) + f'/cv{fold}_' + splitted[-1]
+                save_path = "/".join(parts[:-1]) + f'/cv{fold}_' + parts[-1]
             print(save_path)
             config_copy["save_path"] = save_path
 
-        results_cv.append(run_training(config_copy, 
-                                        train_loader, 
-                                        val_loader, 
-                                        plot_losses=plot_losses,
-                                        plot_latent_space=plot_latent_space,
-                                        **kwargs))
-    
-    if test_loader is not None:
-        cv_models = [results_cv[i]["model"] for i in range(len(folds))]
+        # Train model for this fold
+        results_cv.append(
+            run_training(
+                config_copy,
+                train_loader,
+                val_loader,
+                plot_losses=plot_losses,
+                plot_latent_space=plot_latent_space,
+                **kwargs
+            )
+        )
 
-        cv_ll = compute_CV_ll(cv_models, test_loader)
-        cv_radj = compute_CV_radj(cv_models, test_loader)
-    
-        metric_res = {"Model":[config["model_type"]],
-                    "Posterior latent":[config["posterior_latent_dist"]],
-                    "Mean IWAE":[np.mean(cv_ll)],
-                    "Std IWAE": [np.std(cv_ll)],
-                    "Mean Radj":[np.mean(cv_radj)],
-                    "Std Radj": [np.std(cv_radj)],
-                    }
-        return results_cv, pd.DataFrame(metric_res)
-    
-    return results_cv
+    # ----- IF NO TEST LOADER, RETURN ONLY TRAINED MODELS -----
+    if test_loader is None:
+        return results_cv
+
+    # ----- EVALUATION ON TEST CV MODELS -----
+    cv_models = [results_cv[i]["model"] for i in range(len(folds))]
+
+    # Log-likelihood (IWAE)
+    cv_ll = compute_CV_ll(cv_models, test_loader)
+
+    # ARI per hierarchical level
+    cv_radj = compute_CV_radj(cv_models, test_loader)
+
+    # ----- METRIC AGGREGATION -----
+    metric_res = {
+        "Model": [config["model_type"]],
+        "Posterior latent": [config["posterior_latent_dist"]],
+        "Mean IWAE": [np.mean(cv_ll)],
+        "Std IWAE":  [np.std(cv_ll)],
+    }
+    print(metric_res)
+
+    # Add Radj metrics per hierarchical level
+    for level in cv_radj.keys():
+        metric_res[f"Mean Radj lvl.{level}"] = [np.mean(cv_radj[level])]
+        metric_res[f"Std Radj lvl.{level}"]  = [np.std(cv_radj[level])]
+
+    return results_cv, pd.DataFrame(metric_res)
+
 
 def create_folds(dataset: TensorDataset, 
                  n_splits: int = 5, 
