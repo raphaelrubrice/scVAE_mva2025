@@ -25,6 +25,19 @@ uv sync
 ```
 
 # **Training on PBMC**
-<a target="_blank" href="https://colab.research.google.com/github/raphaelrubrice/scVAE_mva2025/blob/raph/PBMC_experiments.ipynb">
+- 3 model-types in one notebook: 
+<a target="_blank" href="https://colab.research.google.com/github/raphaelrubrice/scVAE_mva2025/blob/main/PBMC_experiments.ipynb">
+  <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
+</a>
+- Experiments on `MixtureVAE`
+<a target="_blank" href="https://colab.research.google.com/github/raphaelrubrice/scVAE_mva2025/blob/main/PBMC_experiments_MixtureVAE.ipynb">
+  <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
+</a>
+- Experiments on `ind_MoMVAE`
+<a target="_blank" href="https://colab.research.google.com/github/raphaelrubrice/scVAE_mva2025/blob/main/PBMC_experiments_Ind_MoMVAE.ipynb">
+  <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
+</a>
+- Experiments on `MoMixVAE`
+<a target="_blank" href="https://colab.research.google.com/github/raphaelrubrice/scVAE_mva2025/blob/main/PBMC_experiments_MoMixVAE.ipynb">
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
 </a>
