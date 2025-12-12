@@ -229,7 +229,7 @@ def training_mvae(
             epoch_parts[key] = [mean_val]
 
         # register clusters for all inputs seen in epoch, then move to CPU
-        if len(epoch_clusters) > 0:
+        if len(epoch_clusters) > 0 and None not in epoch_clusters:
             epoch_clusters = torch.cat(epoch_clusters, dim=0).detach().cpu()
         else:
             epoch_clusters = torch.empty(0)
@@ -294,7 +294,7 @@ def training_mvae(
                 val_epoch_parts[key] = [mean_val]
 
             # register clusters for all inputs seen in epoch (stored on CPU)
-            if len(val_epoch_clusters) > 0:
+            if len(val_epoch_clusters) > 0 and None not in val_epoch_clusters:
                 val_epoch_clusters = torch.cat(val_epoch_clusters, dim=0).detach().cpu()
             else:
                 val_epoch_clusters = torch.empty(0)
@@ -499,7 +499,7 @@ def training_momixvae(
             epoch_parts[key] = [mean_val]
 
         # register clusters for all inputs seen in epoch, then move to CPU for storage
-        if len(epoch_clusters) > 0:
+        if len(epoch_clusters) > 0 and None not in epoch_clusters:
             epoch_clusters = torch.cat(epoch_clusters, dim=0).detach().cpu()
         else:
             epoch_clusters = torch.empty(0)
@@ -555,7 +555,7 @@ def training_momixvae(
                 val_epoch_parts[key] = [mean_val]
 
             # register clusters for all inputs seen in epoch (stored on CPU)
-            if len(val_epoch_clusters) > 0:
+            if len(val_epoch_clusters) > 0 and None not in val_epoch_clusters:
                 val_epoch_clusters = torch.cat(val_epoch_clusters, dim=0).detach().cpu()
             else:
                 val_epoch_clusters = torch.empty(0)
