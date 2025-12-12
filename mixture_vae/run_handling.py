@@ -179,7 +179,7 @@ def instantiate_model(config, train_loader, device):
             
             branch_config = {
                 "input_dim": input_dim,
-                "hidden_dim": 128, 
+                "hidden_dim": hidden_dim, 
                 "n_components": n_c,
                 "n_layers": config.get("n_layers", 1),
                 "prior_latent": prior_latent,

@@ -245,8 +245,7 @@ def compute_ll(model, loader):
                 x = batch["X"][:, 0, :]
             except Exception:
                 x = batch[0]
-            print(x.device)
-            print(device)
+            
             x = x.to(device)
             per_sample_ll = model.iwae(x)
             ll_list.append(per_sample_ll)
@@ -261,8 +260,7 @@ def compute_CV_ll(cv_models: list,
     Computes Cross-Validated Total marginal Log-likelihood
     using the IWAE estimator.
     """
-    # we have 4 levels in the PBMC dataset
-    test_ll = {i:[] for i in range(1,5)}
+    test_ll = {i: [] for i in range(len(cv_models))}
 
     for i,model in enumerate(cv_models):
         test_ll[i] = compute_ll(model, test_loader)

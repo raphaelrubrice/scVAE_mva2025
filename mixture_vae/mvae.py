@@ -19,7 +19,7 @@ class BaseBlock(nn.Module):
                  act_func: callable = nn.ReLU(),
                  final_act_func: callable = None,
                  dropout: float = 0.0,
-                 norm_layer: callable = nn.BatchNorm1d):
+                 norm_layer: callable = nn.LayerNorm):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -38,8 +38,8 @@ class BaseBlock(nn.Module):
                 if self.dropout > 0:
                     module = nn.Sequential(nn.Linear(self.input_dim, self.hidden_dim),
                                     self.act_func,
-                                    nn.Dropout(self.dropout),
-                                    self.norm_layer(self.hidden_dim))
+                                    self.norm_layer(self.hidden_dim),
+                                    nn.Dropout(self.dropout))
                 else:
                     module = nn.Sequential(nn.Linear(self.input_dim, self.hidden_dim),
                                     self.act_func,
@@ -51,8 +51,8 @@ class BaseBlock(nn.Module):
                 if self.dropout > 0:
                     module = nn.Sequential(nn.Linear(self.hidden_dim, self.hidden_dim),
                                     self.act_func,
-                                    nn.Dropout(self.dropout),
-                                    self.norm_layer(self.hidden_dim))
+                                    self.norm_layer(self.hidden_dim),
+                                    nn.Dropout(self.dropout))
                 else:
                     module = nn.Sequential(nn.Linear(self.hidden_dim, self.hidden_dim),
                                     self.act_func,
@@ -85,7 +85,7 @@ class MixtureVAE(nn.Module):
                  posterior_latent: Distribution, # Normal
                  act_func: callable = nn.ReLU(),
                  dropout: int = 0.0,
-                 norm_layer: callable = nn.BatchNorm1d,
+                 norm_layer: callable = nn.LayerNorm,
                  ):
         super().__init__()
         self.input_dim = input_dim
@@ -389,7 +389,7 @@ def summed_elbo_mixture_step(model, x, beta_kl: float | None = None, track_clust
         for pname in parts:
             P[pname] += (parts[pname]/len(model.branches))
 
-    return L, P, clusters 
+    return L / model.n_levels, P, clusters #return L, P, clusters 
 
 class ind_MoMVAE(nn.Module):
     """
@@ -945,7 +945,7 @@ def elbo_MoMix_step(model: MoMixVAE,
             # for each level 
             kl_pi = kl_pi + (level_probas * (level_probas.clamp_min(1e-12).log() - ref.clamp_min(1e-12).log())).sum(dim=1).mean()
     
-    elbo = recon - beta_kl * (kl_z + kl_pi)
+    elbo = recon - beta_kl * (kl_z + kl_pi) / model.n_levels
     loss = -elbo
     # print("Step took", time.time() - t0)
     return loss, dict(recon=recon.detach(), 
