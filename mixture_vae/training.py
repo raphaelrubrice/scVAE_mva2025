@@ -1,5 +1,7 @@
 """Sub-Module to define training protocols"""
 import torch
+import math
+from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR, SequentialLR
 import numpy as np
 import os, sys
 from tqdm.auto import tqdm
@@ -72,16 +74,45 @@ def format_loss(val_epoch_parts, beta_kl):
     # Recon is always shown as subtraction
     # the loss is - recon
     if recon >= 0:
-        recon_str = f"- {recon:.4f}"
+        recon_str = f"- {recon:.3f}"
     else:
-        recon_str = f"{-recon:.4f}"
+        recon_str = f"{-recon:.3f}"
 
-    kl_latent_str = f"{kl_latent:.4f}"
+    kl_latent_str = f"{kl_latent:.3f}"
 
-    kl_cluster_str = f"{kl_cluster:.4f}"
+    kl_cluster_str = f"{kl_cluster:.3f}"
 
-    return f"{recon_str} + {beta_kl:.4f} * ({kl_latent_str} + ({kl_cluster_str}))"
-   
+    return f"{recon_str} + {beta_kl:.3f} * ({kl_latent_str} + ({kl_cluster_str}))"
+
+
+def _build_default_cosine_scheduler(optimizer: torch.optim.Optimizer, epochs: int):
+    """
+    Default: 5% epoch warmup from 0 -> base_lr, then cosine anneal to base_lr/10 by final epoch.
+    Stepped once per epoch.
+    """
+    warmup_epochs = max(1, int(0.05 * epochs))
+    cosine_epochs = max(1, epochs - warmup_epochs)
+
+    # --- warmup: scale LR linearly from 0 to 1 over warmup_epochs
+    def warmup_lambda(e):
+        # e is epoch index starting at 0
+        return float(e + 1) / float(warmup_epochs)
+
+    warmup = LambdaLR(optimizer, lr_lambda=warmup_lambda)
+
+    # --- cosine: from base_lr -> base_lr/10
+    # CosineAnnealingLR goes to eta_min at T_max.
+    # Set eta_min per param group to base_lr/10.
+    base_lrs = [pg["lr"] for pg in optimizer.param_groups]
+    eta_min = min(base_lrs) / 10.0  # conservative choice; or set per group if you prefer
+
+    cosine = CosineAnnealingLR(optimizer, T_max=cosine_epochs, eta_min=eta_min)
+
+    # Chain them
+    sched = SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs])
+    return sched, warmup_epochs
+
+
 def training_mvae(
     dataloader: torch.utils.data.DataLoader,
     val_dataloader: torch.utils.data.DataLoader,
@@ -149,6 +180,9 @@ def training_mvae(
     }
     clusters = {"train": [], "val": []}
 
+    if scheduler is None:
+        scheduler, _lr_warmup_epochs = _build_default_cosine_scheduler(optimizer, epochs)
+
     for epoch in tqdm(range(1, epochs + 1), desc="TRAINING"):
         beta_kl = all_betas[epoch - 1]
 
@@ -191,9 +225,6 @@ def training_mvae(
             # backward + step
             loss.backward()
             optimizer.step()
-
-            if scheduler is not None:
-                scheduler.step()
 
             # [PATCH APPLIED]
             # Accumulate loss as a tensor on GPU (detached), convert later
@@ -355,14 +386,20 @@ def training_mvae(
             print(
                 "Loss printing format:\n"
                 "epoch x: val = loss (-recon + beta_kl * (kl_latent + kl_cluster)) | "
-                "train = loss (-recon + beta_kl * (kl_latent + kl_cluster))\n"
+                "train = loss (-recon + beta_kl * (kl_latent + kl_cluster))"
+                " | lr=current_lr\n"
             )
+        
+        if scheduler is not None:
+            scheduler.step()
 
         if epoch % show_loss_every == 0:
+            current_lr = optimizer.param_groups[0]["lr"]
             print(
                 f"epoch {epoch}: "
-                f"val = {losses['val'][-1]:.4f} ({format_loss(val_epoch_parts, beta_kl)}) | "
-                f"train = {losses['train'][-1]:.4f} ({format_loss(epoch_parts, beta_kl)})"
+                f"val = {losses['val'][-1]:.3f} ({format_loss(val_epoch_parts, beta_kl)}) | "
+                f"train = {losses['train'][-1]:.3f} ({format_loss(epoch_parts, beta_kl)})"
+                f" | lr={current_lr:.3e} "
             )
     
     # saving
@@ -436,6 +473,9 @@ def training_momixvae(
     }
     clusters = {"train": [], "val": []}
 
+    if scheduler is None:
+        scheduler, _lr_warmup_epochs = _build_default_cosine_scheduler(optimizer, epochs)
+
     for epoch in tqdm(range(1, epochs + 1), desc="TRAINING"):
         beta_kl = all_betas[epoch - 1]
 
@@ -468,9 +508,6 @@ def training_momixvae(
 
             loss.backward()
             optimizer.step()
-
-            if scheduler is not None:
-                scheduler.step()
 
             # [PATCH APPLIED]
             epoch_loss += loss.detach()
@@ -609,15 +646,22 @@ def training_momixvae(
         if epoch == 1:
             print(
                 "Loss printing format:\n"
-                "epoch x: val = loss (-recon - beta_kl * (kl_latent + kl_cluster)) | "
-                "train = loss (-recon - beta_kl * (kl_latent + kl_cluster))\n"
+                "epoch x: val = loss (-recon + beta_kl * (kl_latent + kl_cluster)) | "
+                "train = loss (-recon + beta_kl * (kl_latent + kl_cluster))"
+                " | lr=current_lr\n"
             )
 
+        # step LR scheduler once per epoch (after epoch work)
+        if scheduler is not None:
+            scheduler.step()
+
         if epoch % show_loss_every == 0:
+            current_lr = optimizer.param_groups[0]["lr"]
             print(
                 f"epoch {epoch}: "
-                f"val = {losses['val'][-1]:.4f} ({format_loss(val_epoch_parts, beta_kl)}) | "
-                f"train = {losses['train'][-1]:.4f} ({format_loss(epoch_parts, beta_kl)})"
+                f"val = {losses['val'][-1]:.3f} ({format_loss(val_epoch_parts, beta_kl)}) | "
+                f"train = {losses['train'][-1]:.3f} ({format_loss(epoch_parts, beta_kl)})"
+                f" | lr={current_lr:.3e} "
             )
 
     # saving

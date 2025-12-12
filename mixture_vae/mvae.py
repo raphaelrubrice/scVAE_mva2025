@@ -32,33 +32,59 @@ class BaseBlock(nn.Module):
 
         self.dense_block = nn.ModuleList()
 
-        # +1 because n_layers is the number of hidden
-        for i in range(self.n_layers+1):
-            if i == 0:
-                if self.dropout > 0:
-                    module = nn.Sequential(nn.Linear(self.input_dim, self.hidden_dim),
-                                    self.act_func,
-                                    self.norm_layer(self.hidden_dim),
-                                    nn.Dropout(self.dropout))
+        if self.norm_layer is None:
+            # +1 because n_layers is the number of hidden
+            for i in range(self.n_layers+1):
+                if i == 0:
+                    if self.dropout > 0:
+                        module = nn.Sequential(nn.Linear(self.input_dim, self.hidden_dim),
+                                        self.act_func,
+                                        nn.Dropout(self.dropout))
+                    else:
+                        module = nn.Sequential(nn.Linear(self.input_dim, self.hidden_dim),
+                                        self.act_func,
+                                        )
+                elif i == self.n_layers:
+                    module = nn.Sequential(nn.Linear(self.hidden_dim, self.output_dim),
+                                            self.final_act_func)
                 else:
-                    module = nn.Sequential(nn.Linear(self.input_dim, self.hidden_dim),
-                                    self.act_func,
-                                    self.norm_layer(self.hidden_dim))
-            elif i == self.n_layers:
-                module = nn.Sequential(nn.Linear(self.hidden_dim, self.output_dim),
-                                        self.final_act_func)
-            else:
-                if self.dropout > 0:
-                    module = nn.Sequential(nn.Linear(self.hidden_dim, self.hidden_dim),
-                                    self.act_func,
-                                    self.norm_layer(self.hidden_dim),
-                                    nn.Dropout(self.dropout))
+                    if self.dropout > 0:
+                        module = nn.Sequential(nn.Linear(self.hidden_dim, self.hidden_dim),
+                                        self.act_func,
+                                        nn.Dropout(self.dropout))
+                    else:
+                        module = nn.Sequential(nn.Linear(self.hidden_dim, self.hidden_dim),
+                                        self.act_func,
+                                        )
+                self.dense_block.append(module)
+        else:
+            # +1 because n_layers is the number of hidden
+            for i in range(self.n_layers+1):
+                if i == 0:
+                    if self.dropout > 0:
+                        module = nn.Sequential(nn.Linear(self.input_dim, self.hidden_dim),
+                                        self.act_func,
+                                        self.norm_layer(self.hidden_dim),
+                                        nn.Dropout(self.dropout))
+                    else:
+                        module = nn.Sequential(nn.Linear(self.input_dim, self.hidden_dim),
+                                        self.act_func,
+                                        self.norm_layer(self.hidden_dim))
+                elif i == self.n_layers:
+                    module = nn.Sequential(nn.Linear(self.hidden_dim, self.output_dim),
+                                            self.final_act_func)
                 else:
-                    module = nn.Sequential(nn.Linear(self.hidden_dim, self.hidden_dim),
-                                    self.act_func,
-                                    self.norm_layer(self.hidden_dim))
-            self.dense_block.append(module)
-        
+                    if self.dropout > 0:
+                        module = nn.Sequential(nn.Linear(self.hidden_dim, self.hidden_dim),
+                                        self.act_func,
+                                        self.norm_layer(self.hidden_dim),
+                                        nn.Dropout(self.dropout))
+                    else:
+                        module = nn.Sequential(nn.Linear(self.hidden_dim, self.hidden_dim),
+                                        self.act_func,
+                                        self.norm_layer(self.hidden_dim))
+                self.dense_block.append(module)
+            
     def forward(self, x):
         # B x input_dim
         for layer in self.dense_block:

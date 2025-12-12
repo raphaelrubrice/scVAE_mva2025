@@ -213,6 +213,7 @@ def instantiate_model(config, train_loader, device):
             posterior_latent=posterior_latent,
             act_func=config.get("act_func", nn.ReLU()),
             dropout=config.get("dropout", 0.0),
+            norm_layer=config.get("norm_layer", None),
         )
         return model
 
@@ -242,6 +243,7 @@ def instantiate_model(config, train_loader, device):
                 "posterior_latent": posterior_latent,
                 "act_func": config.get("act_func", nn.ReLU()),
                 "dropout": config.get("dropout", 0.0),
+                "norm_layer":config.get("norm_layer", None),
             }
             PARAMS.append(branch_config)
 
@@ -278,6 +280,7 @@ def instantiate_model(config, train_loader, device):
             all_posterior_latent=all_post_lat,
             act_func=config.get("act_func", nn.ReLU()),
             dropout=config.get("dropout", 0.0),
+            norm_layer=config.get("norm_layer", None),
         )
         return model
 
@@ -580,9 +583,9 @@ if __name__ == "__main__":
     }
 
     # CV
-    cv_momix = run_cv(config_momix, folds, val_loader)
-    cv_mvae = run_cv(config_mvae, folds, val_loader)
-    cv_indmom = run_cv(config_indmom, folds, val_loader)
+    cv_momix = run_cv(config_momix, folds, val_loader, show_loss_every=1)
+    cv_mvae = run_cv(config_mvae, folds, val_loader, show_loss_every=1)
+    cv_indmom = run_cv(config_indmom, folds, val_loader, show_loss_every=1)
 
     # # --- Run ---
     # results_mvae = run_training(config_mvae, train_loader, val_loader)
