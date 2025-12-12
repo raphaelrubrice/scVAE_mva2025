@@ -392,7 +392,7 @@ def training_mvae(
                 " | lr=current_lr\n"
             )
         
-        if scheduler is not None:
+        if scheduler is not None and scheduler != False:
             scheduler.step()
 
         if epoch % show_loss_every == 0:
@@ -656,7 +656,7 @@ def training_momixvae(
             )
 
         # step LR scheduler once per epoch (after epoch work)
-        if scheduler is not None:
+        if scheduler is not None and scheduler != False:
             scheduler.step()
 
         if epoch % show_loss_every == 0:
