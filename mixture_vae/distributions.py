@@ -21,45 +21,168 @@ class Distribution(ABC):
         self.n_params = len(self.ref_parameters.values())
         self.param_dims = [get_dim(val) for val in self.ref_parameters.values()]
         self.sample_dim = self.param_dims[0]
-        # usually all parameters are in the sampling dimension,
-        # can be overwritten for dist where its not the case
 
     def get_reference_params(self, z=None):
         """
-        If z is a tensor, broadcast the reference parameters to its batch size,
-        making sure we are on the same device / dtype as z.
+        Returns concatenated parameters of shape (B, sum(param_dims)).
+
+        Supports two cases for each parameter tensor:
+          - (1, D) : standard single prior -> broadcast to (B, D)
+          - (K, D) : component-wise prior -> expanded to match a (B*K, ...) input,
+                    assuming the caller stacked per-component blocks (k-major order):
+                    [k=0 block of B rows, k=1 block of B rows, ...]
         """
         if z is None:
-            return self.ref_parameters
-        else:
-            assert isinstance(z, torch.Tensor) or isinstance(
-                z, np.ndarray
-            ), f"z must be a torch.Tensor or an np.ndarray but got {type(z)}"
-
-            if isinstance(z, torch.Tensor):
-                device = z.device
-                dtype = z.dtype
-                # stack params on same device/dtype as z
-                param_tensors_list = [
-                    val.to(device=device, dtype=dtype).contiguous().view(1, -1)
-                    for _, val in self.ref_parameters.items()
-                ]
-                param_tensor = torch.cat(param_tensors_list, dim=1)
-                batch_size = z.size(0)
-                param_tensor = param_tensor.tile((batch_size, 1))
-                return param_tensor
+            # return a single concatenated row (1, sum_dims) or (K, sum_dims) if mixture
+            # Detect mixture mode by checking if any param has first-dim > 1
+            vals = list(self.ref_parameters.values())
+            if isinstance(vals[0], torch.Tensor):
+                # torch path
+                # if (K,D) per param, concat along dim=1 to (K, sum_dims)
+                if all(v.ndim == 2 for v in vals) and len({v.size(0) for v in vals}) == 1:
+                    return torch.cat([v.contiguous() for v in vals], dim=1)
+                # otherwise flatten into (1,sum_dims)
+                return torch.cat([v.contiguous().view(1, -1) for v in vals], dim=1)
             else:
-                # numpy path (no device issue, but fix contig/reshape)
-                param_arr_list = [
-                    np.asarray(val).reshape(1, -1)
-                    for _, val in self.ref_parameters.items()
-                ]
-                param_arr = np.concatenate(param_arr_list, axis=1)
-                batch_size = z.shape[0]
-                param_arr = np.broadcast_to(
-                    param_arr, (batch_size, param_arr.shape[1])
-                )
-                return param_arr
+                # numpy path
+                vals = [np.asarray(v) for v in vals]
+                if all(v.ndim == 2 for v in vals) and len({v.shape[0] for v in vals}) == 1:
+                    return np.concatenate(vals, axis=1)
+                return np.concatenate([v.reshape(1, -1) for v in vals], axis=1)
+
+        assert isinstance(z, (torch.Tensor, np.ndarray)), (
+            f"z must be a torch.Tensor or an np.ndarray but got {type(z)}"
+        )
+
+        # -----------------------------
+        # Torch path
+        # -----------------------------
+        if isinstance(z, torch.Tensor):
+            device, dtype = z.device, z.dtype
+            batch_size = z.size(0)
+
+            vals = [v.to(device=device, dtype=dtype).contiguous()
+                    for v in self.ref_parameters.values()]
+
+            # Mixture-aware path: each param is (K, D_i) with same K
+            if all(v.ndim == 2 for v in vals):
+                Ks = [v.size(0) for v in vals]
+                if len(set(Ks)) == 1 and Ks[0] > 1:
+                    K = Ks[0]
+                    base = torch.cat(vals, dim=1)  # (K, sum_dims)
+
+                    # We expect batch_size == B*K with k-major stacking
+                    if batch_size % K == 0:
+                        B = batch_size // K
+                        # repeat each component row B times in order: 0..K-1
+                        return base.repeat_interleave(B, dim=0)  # (B*K, sum_dims)
+
+                    # Fallback: cannot infer mapping; broadcast first component
+                    return base[:1].expand(batch_size, -1)
+
+            # Standard path: flatten each into one row then expand to (B, sum_dims)
+            base = torch.cat([v.view(1, -1) for v in vals], dim=1)  # (1, sum_dims)
+            return base.expand(batch_size, -1)
+
+        # -----------------------------
+        # NumPy path
+        # -----------------------------
+        batch_size = z.shape[0]
+        vals = [np.asarray(v) for v in self.ref_parameters.values()]
+
+        if all(v.ndim == 2 for v in vals):
+            Ks = [v.shape[0] for v in vals]
+            if len(set(Ks)) == 1 and Ks[0] > 1:
+                K = Ks[0]
+                base = np.concatenate(vals, axis=1)  # (K, sum_dims)
+
+                if batch_size % K == 0:
+                    B = batch_size // K
+                    return np.repeat(base, repeats=B, axis=0)  # (B*K, sum_dims)
+
+                return np.broadcast_to(base[:1], (batch_size, base.shape[1]))
+
+        base = np.concatenate([v.reshape(1, -1) for v in vals], axis=1)
+        return np.broadcast_to(base, (batch_size, base.shape[1]))
+    
+
+class CategoricalDistribution(Distribution):
+    def __init__(self, ref_parameters):
+        super().__init__(ref_parameters)
+        self.parametric_kl = True
+        self.n_params = 1
+        self.eps = 1e-12
+
+    def _normalize(self, p: torch.Tensor) -> torch.Tensor:
+        p = p.clamp_min(self.eps)
+        return p / p.sum(dim=-1, keepdim=True).clamp_min(self.eps)
+
+    def get_ref_proba(self):
+        probs = self.ref_parameters["probs"]
+        if isinstance(probs, torch.Tensor) and probs.ndim == 2 and probs.size(0) == 1:
+            probs = probs.squeeze(0)
+        return probs
+
+    def get_reference_params(self, z=None):
+        """
+        For categorical, params are naturally dict-shaped.
+        (This does not affect the continuous distributions, which remain concatenated.)
+        """
+        probs = self.get_ref_proba()
+        if z is None:
+            return {"probs": probs}
+
+        if isinstance(z, torch.Tensor):
+            probs = probs.to(device=z.device, dtype=z.dtype)
+            if probs.ndim == 1:
+                probs = probs.unsqueeze(0)
+            return {"probs": probs.expand(z.size(0), -1)}
+
+        probs = np.asarray(probs)
+        if probs.ndim == 2 and probs.shape[0] == 1:
+            probs = probs.squeeze(0)
+        return {"probs": np.broadcast_to(probs.reshape(1, -1), (z.shape[0], probs.shape[0]))}
+
+    def sample(self, latent_params=None, batch_size=1):
+        if isinstance(latent_params, dict):
+            probs = latent_params["probs"]
+        else:
+            probs = self.get_ref_proba()
+
+        if not isinstance(probs, torch.Tensor):
+            probs = torch.as_tensor(probs)
+        probs = self._normalize(probs)
+
+        if probs.ndim == 1:
+            return torch.multinomial(probs, num_samples=batch_size, replacement=True)
+
+        if probs.size(0) != batch_size:
+            batch_size = probs.size(0)
+        return torch.multinomial(probs, num_samples=1, replacement=True).squeeze(-1)
+
+    def log_likelihood(self, x, params):
+        probs = self._normalize(params["probs"])
+        if x.ndim == 2 and x.size(-1) == 1:
+            x = x.squeeze(-1)
+        x = x.long()
+
+        if probs.ndim == 1:
+            probs = probs.unsqueeze(0)
+        logp = probs.clamp_min(self.eps).log()
+        return logp.gather(dim=-1, index=x.unsqueeze(-1)).squeeze(-1)
+
+    def kl_divergence(self, input_params, target_params):
+        q = input_params["probs"]
+        p = target_params["probs"]
+        if q.ndim == 1:
+            q = q.unsqueeze(0)
+        if p.ndim == 1:
+            p = p.unsqueeze(0)
+
+        q = self._normalize(q)
+        p = self._normalize(p)
+        return (q * (q.clamp_min(self.eps).log() - p.clamp_min(self.eps).log())).sum(dim=-1)
+
 
 
 class UniformDistribution(Distribution):

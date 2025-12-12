@@ -12,7 +12,7 @@ if path_to_repo not in sys.path:
 from mixture_vae.mvae import MixtureVAE, elbo_mixture_step, MoMixVAE, elbo_MoMix_step, ind_MoMVAE, summed_elbo_mixture_step
 from mixture_vae.viz import plot_loss_components, plot_latent
 from mixture_vae.saving import save_model, load_model
-from mixture_vae.utils import compute_ll
+from mixture_vae.utils import compute_ll, initialize_gmm_params
 
 class EarlyStopping(object):
     """
@@ -670,61 +670,72 @@ if __name__ == "__main__":
 
     from torch.utils.data import TensorDataset, DataLoader
     from argparse import ArgumentParser
-    from mixture_vae.distributions import NormalDistribution, UniformDistribution, NegativeBinomial
+
+    from mixture_vae.distributions import (
+        NormalDistribution,
+        NegativeBinomial,
+        CategoricalDistribution,   # <-- NEW
+    )
 
     parser = ArgumentParser()
-    parser.add_argument("--model", default=0, type=int, help="Model type")
-
+    parser.add_argument("--model", default=0, type=int, help="0: MixtureVAE, 1: ind_MoMVAE")
     args = parser.parse_args()
     model_type = args.model
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Train toy data
+    X = torch.randint(0, 50, (5000, 5), dtype=torch.float)
+    Y = torch.randint(0, 3, (5000,1), dtype=torch.float)
     
-    # Train Toy data
-    X = torch.randint(0,50, (5000,5), dtype=torch.float)  # count data, 100 samples, 5 features
-    dataset = TensorDataset(X)
-    dataloader = DataLoader(dataset, batch_size=64, shuffle=False) 
-    # shuffle = False because we need order to be safe for cluster trakcing
+    dataset = TensorDataset(X, Y)
+    dataloader = DataLoader(dataset, batch_size=512, shuffle=False)
 
     # Val Toy data
-    X_val = torch.randint(0,50, (500,5), dtype=torch.float)  # count data, 100 samples, 5 features
-    val_dataset = TensorDataset(X_val)
-    val_dataloader = DataLoader(val_dataset, batch_size=64, shuffle=False)
-    # shuffle = False because we need order to be safe for cluster trakcing
-    
+    X_val = torch.randint(0, 50, (500, 5), dtype=torch.float)
+    Y_val = torch.randint(0, 3, (500,1), dtype=torch.float)
+    val_dataset = TensorDataset(X_val, Y_val)
+    val_dataloader = DataLoader(val_dataset, batch_size=256, shuffle=False)
+
+    # -------------------------
     # Problem setup
-    input_dim = 5 # 5 genes
-    hidden_dim = 16 # 8 hidden neurons per layer
-    latent_dim = 2 # 2 dimension latent space
+    # -------------------------
+    input_dim = 5
+    hidden_dim = 16
+    latent_dim = 2
 
-    # Prior on latent: Standard Gaussian in R2
-    mu = torch.zeros((1,latent_dim))
-    std = torch.ones((1,latent_dim))
-    prior_latent = NormalDistribution({"mu":mu,
-                                       "std":std})
-    
-    # Prior on input gene counts: NB for each gene 
-    p = 0.5 * torch.ones((1,input_dim)) # 50/50 chance of expression
-    r = torch.mean(X, dim=0).reshape(1,-1) # prior = average count in train data
-    prior_input = NegativeBinomial({"p":p,
-                                    "r":r})
+    # -------------------------
+    # Prior on input gene counts: NB for each gene
+    # -------------------------
+    p = 0.5 * torch.ones((1, input_dim), device=device)
+    r = torch.mean(X.to(device), dim=0).reshape(1, -1)
+    prior_input = NegativeBinomial({"p": p, "r": r})
 
-    # Posterior on latent: Gaussian on R2 
-    # (here assumed posterior = assumed prior 
-    # but it could have been differnet)
-    mu = torch.zeros((1,latent_dim))
-    std = torch.ones((1,latent_dim))
-    posterior_latent = NormalDistribution({"mu":mu,
-                                           "std":std})
-    
+    # -------------------------
+    # Posterior on latent: Gaussian on R^D (shared across all models/branches)
+    # Learned params are still (B, 2D) from the encoder.
+    # -------------------------
+    mu0 = torch.zeros((1, latent_dim), device=device)
+    std0 = torch.ones((1, latent_dim), device=device)
+    posterior_latent = NormalDistribution({"mu": mu0, "std": std0})
+
+    # ============================================================
+    # Model 0: MixtureVAE (single mixture)
+    # ============================================================
     if model_type == 0:
-        n_components = 3 # 3 clusters are assumed
-        # Prior on cluster repartitions (mixture): Assume balanced 
-        # cluster classes = Uniform on [0,1]
-        a = torch.zeros((1,n_components))
-        b = torch.ones((1,n_components))
-        prior_categorical = UniformDistribution({"a":a, 
-                                                "b":b})
-    
-        # Instantiate MixtureVAE
+        n_components = 3
+
+        # NEW: PCA+KMeans init for this K
+        cat_params, latent_params = initialize_gmm_params(
+            dataloader, n_components=n_components, latent_dim=latent_dim, device=device
+        )
+
+        # NEW: non-uniform categorical prior
+        prior_categorical = CategoricalDistribution(cat_params)
+
+        # NEW: component-specific latent prior (mu/std are (K,D))
+        prior_latent = NormalDistribution(latent_params)
+
         model = MixtureVAE(
             input_dim=input_dim,
             hidden_dim=hidden_dim,
@@ -734,37 +745,45 @@ if __name__ == "__main__":
             prior_input=prior_input,
             prior_categorical=prior_categorical,
             posterior_latent=posterior_latent
-        )
+        ).to(device)
 
-    if model_type == 1:
-        # Prior on cluster repartitions (mixture): Assume balanced 
-        # cluster classes = Uniform on [0,1]
-        cat_priors = {}
-        for n_components in [2, 4, 8]:
-            a = torch.zeros((1,n_components))
-            b = torch.ones((1,n_components))
-            prior_categorical = UniformDistribution({"a":a, 
-                                                    "b":b})
-            cat_priors[n_components] = prior_categorical
-        
-        # Instatiate ind_MoMVAE
-        model = ind_MoMVAE(
-            PARAMS = [
-            {"input_dim": input_dim,
-            "hidden_dim": 128,
-            "n_components": n_components,
-            "n_layers": 1,
-            "prior_latent": prior_latent,
-            "prior_input": prior_input,
-            "prior_categorical": cat_priors[n_components],
-            "posterior_latent": posterior_latent} for n_components in [2, 4, 8]]
-        )
-        
+    # ============================================================
+    # Model 1: ind_MoMVAE (multiple independent branches)
+    # ============================================================
+    elif model_type == 1:
+        branch_components = [2, 4, 8]
+
+        PARAMS = []
+        for K in branch_components:
+            # NEW: init per-branch K
+            cat_params, latent_params = initialize_gmm_params(
+                dataloader, n_components=K, latent_dim=latent_dim, device=device
+            )
+
+            prior_categorical = CategoricalDistribution(cat_params)
+            prior_latent = NormalDistribution(latent_params)
+
+            PARAMS.append({
+                "input_dim": input_dim,
+                "hidden_dim": hidden_dim,
+                "n_components": K,
+                "n_layers": 1,
+                "prior_latent": prior_latent,
+                "prior_input": prior_input,
+                "prior_categorical": prior_categorical,
+                "posterior_latent": posterior_latent,
+            })
+
+        model = ind_MoMVAE(PARAMS=PARAMS).to(device)
+
+    else:
+        raise ValueError(f"Unsupported model_type={model_type}. Use 0 (MixtureVAE) or 1 (ind_MoMVAE).")
+
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    EPOCHS = 5
+    EPOCHS = 50
     BETA_KL = 0.5
-    WARMUP_BETA = int(0.2*EPOCHS)
+    WARMUP_BETA = int(0.2 * EPOCHS)
     PATIENCE = 5
     TOL = 5e-3
 
@@ -788,20 +807,34 @@ if __name__ == "__main__":
 
     print("Loading model..")
     model = load_model(save_path)
+    model.to(device)
+
     print("Testing loaded model")
     compute_ll(model, val_dataloader)
 
-    # plot training and validation losses
-    plot_loss_components(parts["train"], 
-                         parts["val"], 
-                         all_betas, 
-                         title="Loss Breakdown",
-                         save_path=f"./{model.__class__.__name__}toy_losses.pdf")
-    
-    plot_latent(model, 
-                val_dataloader,
-                level=-1,
-                true_labels=False,
-                label_key=None,
-                title="Latent Space",
-                save_path=f"./{model.__class__.__name__}_latent.pdf")
+    plot_loss_components(
+        parts["train"],
+        parts["val"],
+        all_betas,
+        title="Loss Breakdown",
+        save_path=f"./{model.__class__.__name__}_toy_losses.pdf"
+    )
+
+    plot_latent(
+        model,
+        val_dataloader,
+        level=-1,
+        true_labels=False,
+        label_key=None,
+        title="Latent Space",
+        save_path=f"./{model.__class__.__name__}_model_latent.pdf"
+    )
+    plot_latent(
+        model,
+        val_dataloader,
+        level=-1,
+        true_labels=True,
+        label_key=None,
+        title="Latent Space",
+        save_path=f"./{model.__class__.__name__}_true_latent.pdf"
+    )

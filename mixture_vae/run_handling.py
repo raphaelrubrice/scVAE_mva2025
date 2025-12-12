@@ -13,9 +13,9 @@ if path_to_repo not in sys.path:
     sys.path.append(path_to_repo)
 
 from mixture_vae.mvae import MixtureVAE, ind_MoMVAE, MoMixVAE
-from mixture_vae.distributions import NormalDistribution, UniformDistribution, NegativeBinomial, Poisson, Student
+from mixture_vae.distributions import NormalDistribution, UniformDistribution, NegativeBinomial, Poisson, Student, CategoricalDistribution
 from mixture_vae.training import training_mvae, training_momixvae
-from mixture_vae.utils import compute_CV_ll, compute_CV_radj
+from mixture_vae.utils import compute_CV_ll, compute_CV_radj, initialize_gmm_params
 from mixture_vae.viz import plot_loss_components, plot_latent
 
 MODELS = {
@@ -29,7 +29,8 @@ DISTRIBUTIONS = {
     "Uniform": UniformDistribution, 
     "NegativeBinomial": NegativeBinomial,
     "Poisson": Poisson, 
-    "Student": Student
+    "Student": Student,
+    "Categorical": CategoricalDistribution
 }
 
 def build_distribution(dist_name: str, params: dict, device='cpu'):
@@ -97,33 +98,34 @@ def get_prior_parameters(dist_name, dim, device, loader=None):
         # Initializes a Uniform between 0 and 1 by default
         params["a"] = torch.zeros((1, dim), device=device)
         params["b"] = torch.ones((1, dim), device=device)
-        
     else:
         print(f"Warning: No specific init logic for {dist_name}, using zeros/ones.")
         params["param1"] = torch.zeros((1, dim), device=device)
     
     return params
 
-def build_categorical_prior(dist_name, n_components, device):
+def build_categorical_prior(dist_name, n_components, device, cat_params=None):
     """Helper specifically for building the prior on Y (clusters)."""
-    # 'dim' here implies the number of components/clusters
-    params = get_prior_parameters(dist_name, n_components, device)
+    if dist_name == "Uniform":
+        # 'dim' here implies the number of components/clusters
+        params = get_prior_parameters(dist_name, n_components, device)
+    else:
+        assert cat_params is not None, f"When not using Uniform categorical, you must provide cat_params"
+        params = cat_params
     return build_distribution(dist_name, params, device)
 
-def get_continuous_priors(config, train_loader, input_dim, latent_dim, device):
-    """
-    Calculates the 3 continuous priors (Input, Latent Prior, Latent Posterior).
-    """
-    # 1. Get names
+def get_continuous_priors(config, train_loader, input_dim, latent_dim, device, latent_prior_init=None):
     p_lat_name = config.get("prior_latent_dist", "Normal")
     p_in_name = config.get("prior_input_dist", "NegativeBinomial")
     post_lat_name = config.get("posterior_latent_dist", "Normal")
 
-    # 2. Build
-    # Latent Prior
-    p_lat_params = get_prior_parameters(p_lat_name, latent_dim, device)
+    # Latent Prior (allow data-dependent init)
+    if latent_prior_init is not None:
+        p_lat_params = latent_prior_init
+    else:
+        p_lat_params = get_prior_parameters(p_lat_name, latent_dim, device)
     prior_latent = build_distribution(p_lat_name, p_lat_params, device)
-    
+
     # Input Prior (Decoder)
     p_in_params = get_prior_parameters(p_in_name, input_dim, device, loader=train_loader)
     prior_input = build_distribution(p_in_name, p_in_params, device)
@@ -135,26 +137,70 @@ def get_continuous_priors(config, train_loader, input_dim, latent_dim, device):
     return prior_latent, prior_input, posterior_latent
 
 def instantiate_model(config, train_loader, device):
-    model_type = config["model_type"]
-    input_dim = config["input_dim"]
-    hidden_dim = config["hidden_dim"]
-    latent_dim = config["latent_dim"]
-    
-    # 1. Setup the 3 Continuous Distributions
-    prior_latent, prior_input, posterior_latent = get_continuous_priors(
-        config, train_loader, input_dim, latent_dim, device
-    )
+    model_type  = config["model_type"]
+    input_dim   = config["input_dim"]
+    hidden_dim  = config["hidden_dim"]
+    latent_dim  = config["latent_dim"]
 
-    # 2. Identify the Categorical Distribution Type (The 4th distribution)
-    # Default to Uniform if not specified
-    cat_dist_name = config.get("prior_categorical_dist", "Uniform")
+    # Names of distributions
+    p_lat_name     = config.get("prior_latent_dist", "Normal")
+    p_in_name      = config.get("prior_input_dist", "NegativeBinomial")
+    post_lat_name  = config.get("posterior_latent_dist", "Normal")
 
-    # 3. Model Specific Instantiation
+    # Categorical prior distribution name
+    # Recommended: "Categorical" (your new class). If "Uniform", fallback to uniform.
+    cat_dist_name  = config.get("prior_categorical_dist", "Categorical")
+
+    # ------------------------------------------------------------
+    # Helper: build input prior once (shared across models/levels)
+    # ------------------------------------------------------------
+    p_in_params = get_prior_parameters(p_in_name, input_dim, device, loader=train_loader)
+    prior_input = build_distribution(p_in_name, p_in_params, device)
+
+    # ------------------------------------------------------------
+    # Helper: build a posterior latent distribution (fresh instance)
+    # ------------------------------------------------------------
+    def _make_posterior_latent():
+        post_lat_params = get_prior_parameters(post_lat_name, latent_dim, device)
+        return build_distribution(post_lat_name, post_lat_params, device)
+
+    # ------------------------------------------------------------
+    # Helper: per-(sub)mixture init for categorical + latent prior
+    # ------------------------------------------------------------
+    def _init_cat_and_latent_priors_for_K(K: int):
+        """
+        Returns:
+          prior_cat: distribution instance for p(y)
+          prior_lat: distribution instance for p(z|y) with (K,D) parameters
+        """
+        # Data-dependent init in latent space
+        cat_params, latent_params = initialize_gmm_params(
+            train_loader, n_components=K, latent_dim=latent_dim, device=device
+        )
+
+        # Categorical prior
+        if cat_dist_name == "Uniform":
+            prior_cat = build_categorical_prior("Uniform", K, device)
+        else:
+            # expects something like {"probs": (K,)}
+            prior_cat = build_distribution(cat_dist_name, cat_params, device)
+
+        # Latent prior (component-specific): expects {"mu": (K,D), "std": (K,D)} for Normal
+        prior_lat = build_distribution(p_lat_name, latent_params, device)
+
+        return prior_cat, prior_lat
+
+    # ============================================================
+    # 1) MixtureVAE
+    # ============================================================
     if model_type == "MixtureVAE":
         n_components = config["n_components"]
-        
-        # Build the 4th distribution: Prior on Y
-        prior_cat = build_categorical_prior(cat_dist_name, n_components, device)
+
+        # Data-dependent init for p(y) and p(z|y)
+        prior_cat, prior_latent = _init_cat_and_latent_priors_for_K(n_components)
+
+        # Posterior q(z|x) (single)
+        posterior_latent = _make_posterior_latent()
 
         model = MixtureVAE(
             input_dim=input_dim,
@@ -163,71 +209,79 @@ def instantiate_model(config, train_loader, device):
             n_layers=config.get("n_layers", 1),
             prior_latent=prior_latent,
             prior_input=prior_input,
-            prior_categorical=prior_cat,       # <--- Injected here
+            prior_categorical=prior_cat,
             posterior_latent=posterior_latent,
             act_func=config.get("act_func", nn.ReLU()),
-            dropout=config.get("dropout", 0.0)
+            dropout=config.get("dropout", 0.0),
         )
+        return model
 
-    elif model_type == "ind_MoMVAE":
+    # ============================================================
+    # 2) ind_MoMVAE (independent branches)
+    # ============================================================
+    if model_type == "ind_MoMVAE":
+        # Accept either "branch_components" or "hierarchy_components"
         branches = config.get("branch_components", config.get("hierarchy_components"))
-        
+        if branches is None:
+            raise ValueError("ind_MoMVAE requires 'branch_components' or 'hierarchy_components'.")
+
         PARAMS = []
         for n_c in branches:
-            # Build the 4th distribution per branch
-            prior_cat = build_categorical_prior(cat_dist_name, n_c, device)
-            
+            # Per-branch init
+            prior_cat, prior_latent = _init_cat_and_latent_priors_for_K(n_c)
+            posterior_latent = _make_posterior_latent()
+
             branch_config = {
                 "input_dim": input_dim,
-                "hidden_dim": hidden_dim, 
+                "hidden_dim": hidden_dim,
                 "n_components": n_c,
                 "n_layers": config.get("n_layers", 1),
                 "prior_latent": prior_latent,
                 "prior_input": prior_input,
-                "prior_categorical": prior_cat, # <--- Injected here
+                "prior_categorical": prior_cat,
                 "posterior_latent": posterior_latent,
                 "act_func": config.get("act_func", nn.ReLU()),
-                "dropout": config.get("dropout", 0.0)
+                "dropout": config.get("dropout", 0.0),
             }
             PARAMS.append(branch_config)
-            
-        model = ind_MoMVAE(PARAMS=PARAMS)
 
-    elif model_type == "MoMixVAE":
-        hierarchy = config["hierarchy_components"]
-        
+        model = ind_MoMVAE(PARAMS=PARAMS)
+        return model
+
+    # ============================================================
+    # 3) MoMixVAE (hierarchy levels)
+    #    Assumption: MoMixVAE accepts all_prior_latent=... (list)
+    # ============================================================
+    if model_type == "MoMixVAE":
+        hierarchy = config.get("hierarchy_components", None)
+        if hierarchy is None:
+            raise ValueError("MoMixVAE requires 'hierarchy_components'.")
+
         all_prior_cat = []
-        all_post_latent = []
-        
-        # For MoMix, we might want to vary posterior per level, 
-        # but here we assume same config for all levels
-        post_lat_name = config.get("posterior_latent_dist", "Normal")
+        all_prior_lat = []
+        all_post_lat  = []
 
         for n_c in hierarchy:
-            # Build the 4th distribution per level
-            all_prior_cat.append(build_categorical_prior(cat_dist_name, n_c, device))
-            
-            # Posterior Latent per level (Fresh instance per level)
-            # (Re-using helper to ensure fresh parameters)
-            post_lat_params = get_prior_parameters(post_lat_name, latent_dim, device)
-            all_post_latent.append(build_distribution(post_lat_name, post_lat_params, device))
+            prior_cat, prior_latent = _init_cat_and_latent_priors_for_K(n_c)
+            all_prior_cat.append(prior_cat)
+            all_prior_lat.append(prior_latent)
+            all_post_lat.append(_make_posterior_latent())
 
         model = MoMixVAE(
             input_dim=input_dim,
             hidden_dim=hidden_dim,
             hierarchy_components=hierarchy,
             n_layers=config.get("n_layers", 2),
-            prior_latent=prior_latent,
             prior_input=prior_input,
-            all_prior_categorical=all_prior_cat, # <--- Injected here (list)
-            all_posterior_latent=all_post_latent,
+            all_prior_categorical=all_prior_cat,
+            all_prior_latent=all_prior_lat,          # <--- you said assume this exists
+            all_posterior_latent=all_post_lat,
             act_func=config.get("act_func", nn.ReLU()),
-            dropout=config.get("dropout", 0.0)
+            dropout=config.get("dropout", 0.0),
         )
-    else:
-        raise ValueError(f"Unknown model_type: {model_type}")
+        return model
 
-    return model
+    raise ValueError(f"Unknown model_type: {model_type}")
 
 def run_training(config: dict, 
                  train_loader: DataLoader, 
@@ -261,7 +315,7 @@ def run_training(config: dict,
     epochs = config.get("epochs", 50)
     beta_kl = config.get("beta_kl", 1.0)
     warmup = config.get("warmup", None)
-    patience = config.get("patience", int(0.1*epochs))
+    patience = config.get("patience", max(5,int(0.1*epochs)))
     tol = config.get("tol", 1e-3)
     save_path = config.get("save_path", f"./model_{config['model_type']}.ckpt")
     track_clusters = config.get("track_clusters", False)
@@ -396,14 +450,15 @@ def run_cv(config, folds, test_loader=None,
         "Mean IWAE": [np.mean(cv_ll)],
         "Std IWAE":  [np.std(cv_ll)],
     }
-    print(metric_res)
 
     # Add Radj metrics per hierarchical level
     for level in cv_radj.keys():
         metric_res[f"Mean Radj lvl.{level}"] = [np.mean(cv_radj[level])]
         metric_res[f"Std Radj lvl.{level}"]  = [np.std(cv_radj[level])]
-
-    return results_cv, pd.DataFrame(metric_res)
+    
+    metric_df = pd.DataFrame(metric_res)
+    print(metric_df)
+    return results_cv, metric_df
 
 
 def create_folds(dataset: TensorDataset, 
@@ -449,9 +504,9 @@ if __name__ == "__main__":
     os.chdir(file_parent)
              
     X = torch.randint(0, 50, (5000, 5), dtype=torch.float)
-    Y = torch.randint(0, 3, (5000,1), dtype=torch.float)
+    Y = nn.functional.one_hot(torch.randint(0, 3, (5000,1), dtype=torch.long))
     X_val = torch.randint(0, 50, (500, 5), dtype=torch.float)
-    Y_val = torch.randint(0, 3, (500,1), dtype=torch.float)
+    Y_val = nn.functional.one_hot(torch.randint(0, 3, (500,1), dtype=torch.long))
     
     train_ds = torch.utils.data.TensorDataset(X, Y)
     val_ds = torch.utils.data.TensorDataset(X_val, Y_val)
@@ -471,7 +526,7 @@ if __name__ == "__main__":
         "prior_latent_dist": "Normal",
         "prior_input_dist": "NegativeBinomial",
         "posterior_latent_dist": "Normal",
-        "prior_categorical_dist": "Uniform",
+        "prior_categorical_dist": "Categorical",
         "input_dim": 5,
         "hidden_dim": 16,
         "latent_dim": 2,
@@ -491,11 +546,11 @@ if __name__ == "__main__":
         "prior_latent_dist": "Normal",
         "prior_input_dist": "NegativeBinomial",
         "posterior_latent_dist": "Normal",
-        "prior_categorical_dist": "Uniform",
+        "prior_categorical_dist": "Categorical",
         "input_dim": 5,
         "hidden_dim": 16,
         "latent_dim": 2,
-        "hierarchy_components": [2, 3, 5],
+        "hierarchy_components": [2, 3],
         "n_layers": 2,
         "lr": 1e-3,
         "epochs": 5,
@@ -511,11 +566,11 @@ if __name__ == "__main__":
         "prior_latent_dist": "Normal",
         "prior_input_dist": "NegativeBinomial",
         "posterior_latent_dist": "Normal",
-        "prior_categorical_dist": "Uniform",
+        "prior_categorical_dist": "Categorical",
         "input_dim": 5,
         "hidden_dim": 16,
         "latent_dim": 2,
-        "hierarchy_components": [2, 3, 5],
+        "hierarchy_components": [2, 3],
         "n_layers": 2,
         "lr": 1e-3,
         "epochs": 5,
@@ -525,7 +580,9 @@ if __name__ == "__main__":
     }
 
     # CV
+    cv_momix = run_cv(config_momix, folds, val_loader)
     cv_mvae = run_cv(config_mvae, folds, val_loader)
+    cv_indmom = run_cv(config_indmom, folds, val_loader)
 
     # # --- Run ---
     # results_mvae = run_training(config_mvae, train_loader, val_loader)

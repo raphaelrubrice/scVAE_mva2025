@@ -4,6 +4,8 @@ from collections.abc import Iterable
 from typing import Any
 from sklearn.metrics import confusion_matrix
 from sklearn.metrics.cluster import adjusted_rand_score
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 from tqdm.auto import tqdm
@@ -149,12 +151,15 @@ def compute_radj(model, loader, n_levels):
 
                 if pbmc:
                     key = f"y{key}" # to access y values
+                else:
+                    key = key - 1 # 0 indexed when not pbmc
 
                 y = batch[key] # one hot
 
                 if pbmc:
                     key = int(key[key.index("y")+1:]) # revert back
-                
+                else:
+                    key = key + 1
                 true_clusters[key].append(torch.argmax(y.squeeze(), dim=1)) # ordinal
 
                 if isinstance(model, MixtureVAE):
@@ -201,9 +206,10 @@ def compute_CV_radj(cv_models: list,
         n_levels = len([key for key in batch.keys() if 'y' in key])
     else:
         n_levels = cv_models[0].n_levels
-
+    level_list = list(range(1, n_levels + 1))
+    
     # Initialize per-level ARI lists for test
-    test_radj = {lvl: [] for lvl in range(1, n_levels + 1)}
+    test_radj = {lvl: [] for lvl in level_list}
 
     # Compute ARI for each model/fold on the test loader
     for model in cv_models:
@@ -213,7 +219,7 @@ def compute_CV_radj(cv_models: list,
 
     if cv_val_loaders is not None:
         # Per-level ARI lists for validation
-        val_radj = {lvl: [] for lvl in range(1, n_levels + 1)}
+        val_radj = {lvl: [] for lvl in level_list}
 
         for model, loader in zip(cv_models, cv_val_loaders):
             dset_radj = compute_radj(model, loader, n_levels)
@@ -223,7 +229,7 @@ def compute_CV_radj(cv_models: list,
         # Compute per-level stats
         val_radj_stats = {}
         overall_radj = {}
-        for lvl in range(1, n_levels + 1):
+        for lvl in level_list:
             val_arr = np.asarray(val_radj[lvl], dtype=float)
             test_arr = np.asarray(test_radj[lvl], dtype=float)
             all_arr = np.concatenate([val_arr, test_arr])
@@ -280,6 +286,71 @@ def compute_CV_ll(cv_models: list,
                     for i,lls in val_ll.items()}
         return overall_ll, val_ll, test_ll
     return test_ll
+
+def initialize_gmm_params(loader, n_components, latent_dim, device):
+    """
+    Computes data-dependent initialization for priors using PCA + KMeans.
+    """
+    print(f"Initializing priors with PCA + KMeans ({n_components} components)...")
+    
+    # 1. Collect all data (careful with memory, subsample if >100k cells)
+    all_x = []
+    for batch in loader:
+        # Handle dict or tuple batches
+        x = batch["X"][:, 0, :] if isinstance(batch, dict) else batch[0]
+        all_x.append(x)
+    X_full = torch.cat(all_x, dim=0).cpu().numpy()
+
+    # 2. PCA (Reduce noise)
+    # Reducing to latent_dim is aggressive but aligns the initialization perfectly
+    pca = PCA(n_components=latent_dim) 
+    X_pca = pca.fit_transform(X_full)
+
+    # 3. K-Means
+    kmeans = KMeans(n_clusters=n_components, n_init=10, random_state=42)
+    y_pred = kmeans.fit_predict(X_pca)
+    
+    # 4. Compute Statistics per Cluster
+    cluster_means = []
+    cluster_stds = []
+    cluster_probs = []
+    
+    eps = 1e-6 # Stability
+    
+    for k in range(n_components):
+        # Select data for cluster k
+        X_k = X_pca[y_pred == k]
+        
+        # Proportions (with smoothing)
+        n_k = len(X_k)
+        prob = (n_k + 1) / (len(X_full) + n_components) # Add-1 smoothing
+        cluster_probs.append(prob)
+        
+        # Mean & Std in the PCA-Latent space
+        if n_k > 1:
+            mean_k = X_k.mean(axis=0)
+            std_k = X_k.std(axis=0) + eps # Avoid zero std
+        else:
+            # Fallback for empty clusters
+            mean_k = np.zeros(latent_dim)
+            std_k = np.ones(latent_dim)
+            
+        cluster_means.append(torch.tensor(mean_k))
+        cluster_stds.append(torch.tensor(std_k))
+
+    # Stack into tensors
+    # Shape: (1, n_components * latent_dim) or (n_components, latent_dim) 
+    
+    # Categorical Params
+    cat_params = {"probs": torch.tensor(cluster_probs, device=device).unsqueeze(1)}
+    
+    # Latent Params (Mean and Std)
+    mu_tensor = torch.stack(cluster_means).to(device) # (K, D)
+    std_tensor = torch.stack(cluster_stds).to(device) # (K, D)
+    
+    latent_params = {"mu": mu_tensor, "std": std_tensor}
+    
+    return cat_params, latent_params
 
 def make_figure(config):
     # key = name of the model and posterior

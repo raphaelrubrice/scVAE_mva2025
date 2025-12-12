@@ -28,7 +28,7 @@ def extract_momix_vae_config(model: MoMixVAE) -> dict:
         'hidden_dim': model.hidden_dim,
         'hierarchy_components': model.hierarchy_components,
         'n_layers': model.n_layers,
-        'prior_latent': model.prior_latent,
+        'all_prior_latent': model.all_prior_latent,
         'prior_input': model.prior_input,
         'all_prior_categorical': model.all_prior_categorical,
         'all_posterior_latent': model.all_posterior_latent,
