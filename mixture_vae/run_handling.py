@@ -261,10 +261,10 @@ def run_training(config: dict,
     epochs = config.get("epochs", 50)
     beta_kl = config.get("beta_kl", 1.0)
     warmup = config.get("warmup", None)
-    patience = config.get("patience", 5)
+    patience = config.get("patience", int(0.1*epochs))
     tol = config.get("tol", 1e-3)
     save_path = config.get("save_path", f"./model_{config['model_type']}.ckpt")
-    track_clusters = config.get("track_clusters", True)
+    track_clusters = config.get("track_clusters", False)
 
     # 4. Select and Run Training Function
     model_type_str = config["model_type"]
