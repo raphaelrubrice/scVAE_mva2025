@@ -410,11 +410,16 @@ def elbo_mixture_step(model: MixtureVAE,
     kl_per_k = torch.stack([kl_per_k[i*BATCH_SIZE:(i+1)*BATCH_SIZE] 
                                                  for i in range(K)], dim=1) # [B, K]
     kl_z = (cluster_probas * kl_per_k).sum(dim=1).mean()               # scalar
-    kl_z = kl_z / n_levels
+    kl_z = kl_z
 
     # 3) Cluster KL: KL(π(x) || p(c))
     ref = broadcast_cat_probs(model.prior_categorical.get_ref_proba(), cluster_probas)
     kl_pi = (cluster_probas * (cluster_probas.clamp_min(1e-12).log() - ref.clamp_min(1e-12).log())).sum(dim=1).mean()
+    kl_pi = kl_pi
+
+    # normalize per level to be able to compare with other MitureVAE
+    recon = recon / n_levels
+    kl_z = kl_z / n_levels
     kl_pi = kl_pi / n_levels
 
     elbo = recon - beta_kl * (kl_z + kl_pi)
@@ -1004,13 +1009,18 @@ def elbo_MoMix_step(model: MoMixVAE,
             if kl_per_combinations.dim() > 1:
                 kl_per_combinations = kl_per_combinations.sum(dim=1)
             kl_z = kl_z + (joint_probas.unsqueeze(2) * kl_per_combinations).sum(dim=1).mean()               # scalar
-            kl_z = kl_z / model.n_levels
+            kl_z = kl_z
             
             # 3) Cluster KL: KL(π(x) || p(c))
             ref = broadcast_cat_probs(model.all_prior_categorical[level].get_ref_proba(), level_probas)
             # for each level 
             kl_pi = kl_pi + (level_probas * (level_probas.clamp_min(1e-12).log() - ref.clamp_min(1e-12).log())).sum(dim=1).mean()
-            kl_pi = kl_pi / model.n_levels
+            kl_pi = kl_pi
+
+    # normalize per level to be able to compare with other MitureVAE
+    recon = recon / model.n_levels
+    kl_z = kl_z / model.n_levels
+    kl_pi = kl_pi / model.n_levels
 
     elbo = recon - beta_kl * (kl_z + kl_pi)
     loss = -elbo
