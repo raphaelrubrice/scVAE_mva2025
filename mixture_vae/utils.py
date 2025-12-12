@@ -122,119 +122,407 @@ def match_labels(label_true: np.ndarray[int], label_pred: np.ndarray[int]) -> np
 
     return label_pred_matched
 
-def compute_radj(model, loader, n_levels):
-    from mixture_vae.mvae import MixtureVAE
-    
-    dset_radj = {i:[] for i in range(1,n_levels+1)}
-    
-    true_clusters = {i:[] for i in range(1,n_levels+1)}
-    predicted_clusters = {i:[] for i in range(1,n_levels+1)}
+def _to_ordinal_labels(y: torch.Tensor) -> torch.Tensor:
+    """
+    Accept y as:
+      - (B,) or (B,1) integer labels
+      - (B,K) one-hot or probabilities
+    Return: (B,) long labels
+    """
+    y = y.detach()
+    if y.ndim == 0:
+        # scalar (should not happen for batches, but be safe)
+        return y.view(1).long()
+    if y.ndim == 1:
+        return y.long()
+    if y.ndim == 2 and y.size(1) == 1:
+        return y[:, 0].long()
+    # (B,K) or (...,K) => argmax on last dim
+    return torch.argmax(y, dim=-1).long()
+
+
+def _infer_pbmc_loader(first_batch) -> bool:
+    """
+    PBMC loader is dict-based and has y1..y4 keys (at least y1).
+    """
+    if not isinstance(first_batch, dict):
+        return False
+    return any(k.startswith("y") for k in first_batch.keys())
+
+
+def _count_dataset_levels(first_batch) -> int:
+    """
+    - PBMC: count y* keys (y1..y4)
+    - classic: batch is tuple/list -> labels are batch[1:], so K = len(batch)-1
+    """
+    if _infer_pbmc_loader(first_batch):
+        ys = [k for k in first_batch.keys() if k.startswith("y")]
+        # Expect y1..y4 but allow missing intermediate
+        # We count the keys present.
+        return len(ys)
+    # classic
+    if isinstance(first_batch, (tuple, list)):
+        return max(0, len(first_batch) - 1)
+    raise ValueError(f"Unsupported batch type: {type(first_batch)}")
+
+
+def _map_dataset_level_to_model_level(dataset_lvl_1idx: int, model_n_levels: int, dataset_K: int) -> int:
+    """
+    Map dataset level in [1..K] onto model level in [1..N], aligning to the last K levels.
+
+    Example:
+      N=2, K=1: dataset lvl 1 -> model lvl 2
+      N=3, K=2: dataset lvl 1 -> model lvl 2, dataset lvl 2 -> model lvl 3
+      N=3, K=3: identity mapping
+    """
+    assert 1 <= dataset_lvl_1idx <= dataset_K
+    offset = model_n_levels - dataset_K
+    if offset < 0:
+        # dataset has more levels than model; best effort: clip to model levels
+        offset = 0
+    model_lvl = offset + dataset_lvl_1idx
+    # clip just in case
+    return int(max(1, min(model_n_levels, model_lvl)))
+
+def _dbg(msg: str, enabled: bool):
+    if enabled:
+        print(msg)
+
+def compute_radj_pbmc(
+    model,
+    loader,
+    dataset_K: int,
+    model_n_levels: int,
+    debug: bool = False,
+):
+    """
+    PBMC loader: batch is dict with X and labels y1..y4 (present subset).
+    dataset_K: number of y* keys present (levels)
+    model_n_levels: model.n_levels
+    """
     model.eval()
     device = next(model.parameters()).device
-    
+
+    true_by_lvl = {lvl: [] for lvl in range(1, dataset_K + 1)}
+    pred_by_lvl = {lvl: [] for lvl in range(1, dataset_K + 1)}
+
+    # ---- debug: print dataset ↔ model level mapping
+    _dbg(
+        f"[PBMC][DEBUG] dataset_K={dataset_K}, model_n_levels={model_n_levels}",
+        debug,
+    )
+    for d_lvl in range(1, dataset_K + 1):
+        m_lvl = _map_dataset_level_to_model_level(d_lvl, model_n_levels, dataset_K)
+        _dbg(
+            f"[PBMC][DEBUG] dataset level {d_lvl} -> model level {m_lvl}",
+            debug,
+        )
+
     with torch.no_grad():
-        batch = next(iter(loader))
-        try:
-            x = batch["X"][:, 0, :]
-            pbmc = True
-        except Exception:
-            pbmc = False
+        for b_idx, batch in enumerate(loader):
+            x = batch["X"][:, 0, :].to(device)
 
-        for batch in tqdm(loader, total=len(loader)):
-            if pbmc:
-                x = batch["X"][:, 0, :]
-            else:
-                x = batch[0]
+            if b_idx == 0:
+                _dbg(
+                    f"[PBMC][DEBUG] batch keys = {list(batch.keys())}",
+                    debug,
+                )
+                _dbg(
+                    f"[PBMC][DEBUG] X.shape = {tuple(x.shape)}",
+                    debug,
+                )
 
-            x = x.to(device)
-            for key in true_clusters.keys():
+            for d_lvl in range(1, dataset_K + 1):
+                y_key = f"y{d_lvl}"
+                y = batch.get(y_key, None)
 
-                if pbmc:
-                    key = f"y{key}" # to access y values
-                else:
-                    key = key - 1 # 0 indexed when not pbmc
-
-                y = batch[key] # one hot
-
-                if pbmc:
-                    key = int(key[key.index("y")+1:]) # revert back
-                else:
-                    key = key + 1
-                true_clusters[key].append(torch.argmax(y.squeeze(), dim=1)) # ordinal
-
-                if isinstance(model, MixtureVAE):
-                    if key == len(true_clusters.keys()):
-                        predicted_clusters[key].append(model.cluster_input(x))
+                if b_idx == 0:
+                    if y is None:
+                        _dbg(
+                            f"[PBMC][DEBUG] y{d_lvl} is None",
+                            debug,
+                        )
                     else:
-                        predicted_clusters[key].append(None)
+                        _dbg(
+                            f"[PBMC][DEBUG] y{d_lvl}.shape = {tuple(y.shape)}",
+                            debug,
+                        )
+
+                if y is None:
+                    true_by_lvl[d_lvl].append(None)
                 else:
-                    predicted_clusters[key].append(model.cluster_input(x, at_level=key-1))
+                    true_by_lvl[d_lvl].append(_to_ordinal_labels(y))
+
+                m_lvl = _map_dataset_level_to_model_level(
+                    d_lvl, model_n_levels, dataset_K
+                )
+
+                try:
+                    pred = model.cluster_input(x, at_level=m_lvl - 1)
+                except TypeError:
+                    pred = model.cluster_input(x)
+
+                if b_idx == 0:
+                    _dbg(
+                        f"[PBMC][DEBUG] pred clusters (dataset lvl {d_lvl}, model lvl {m_lvl}) "
+                        f"shape = {tuple(pred.shape)} | unique={pred.unique().tolist()}",
+                        debug,
+                    )
+
+                pred_by_lvl[d_lvl].append(pred)
+
+    radj = {}
+    for d_lvl in range(1, dataset_K + 1):
+        labels_list = [t for t in true_by_lvl[d_lvl] if t is not None]
+        preds_list = [t for t in pred_by_lvl[d_lvl] if t is not None]
+
+        if len(labels_list) == 0 or len(preds_list) == 0:
+            _dbg(
+                f"[PBMC][DEBUG] Dropping dataset level {d_lvl} (missing labels or preds)",
+                debug,
+            )
+            continue
+
+        y_true = torch.cat(labels_list, dim=0).cpu().numpy().ravel()
+        y_pred = torch.cat(preds_list, dim=0).cpu().numpy().ravel()
+
+        _dbg(
+            f"[PBMC][DEBUG] Final ARI eval lvl {d_lvl}: "
+            f"y_true unique={np.unique(y_true)}, "
+            f"y_pred unique={np.unique(y_pred)}",
+            debug,
+        )
+
+        radj[d_lvl] = [adjusted_rand_score(y_true, y_pred)]
+
+    return radj
+
+
+def compute_radj_classic(
+    model,
+    loader,
+    dataset_K: int,
+    model_n_levels: int,
+    debug: bool = False,
+):
+    """
+    Classic loader: batch is (X, y1, y2, ..., yK)
+    """
+    model.eval()
+    device = next(model.parameters()).device
+
+    true_by_lvl = {lvl: [] for lvl in range(1, dataset_K + 1)}
+    pred_by_lvl = {lvl: [] for lvl in range(1, dataset_K + 1)}
+
+    _dbg(
+        f"[CLASSIC][DEBUG] dataset_K={dataset_K}, model_n_levels={model_n_levels}",
+        debug,
+    )
+    for d_lvl in range(1, dataset_K + 1):
+        m_lvl = _map_dataset_level_to_model_level(d_lvl, model_n_levels, dataset_K)
+        _dbg(
+            f"[CLASSIC][DEBUG] dataset level {d_lvl} -> model level {m_lvl}",
+            debug,
+        )
+
+    with torch.no_grad():
+        for b_idx, batch in enumerate(loader):
+            x = batch[0].to(device)
+
+            if b_idx == 0:
+                _dbg(
+                    f"[CLASSIC][DEBUG] batch len = {len(batch)}",
+                    debug,
+                )
+                _dbg(
+                    f"[CLASSIC][DEBUG] X.shape = {tuple(x.shape)}",
+                    debug,
+                )
+
+            for d_lvl in range(1, dataset_K + 1):
+                y = batch[d_lvl]
+
+                if b_idx == 0:
+                    if y is None:
+                        _dbg(
+                            f"[CLASSIC][DEBUG] y{d_lvl} is None",
+                            debug,
+                        )
+                    else:
+                        _dbg(
+                            f"[CLASSIC][DEBUG] y{d_lvl}.shape = {tuple(y.shape)}",
+                            debug,
+                        )
+
+                if y is None:
+                    true_by_lvl[d_lvl].append(None)
+                else:
+                    true_by_lvl[d_lvl].append(_to_ordinal_labels(y))
+
+                m_lvl = _map_dataset_level_to_model_level(
+                    d_lvl, model_n_levels, dataset_K
+                )
+
+                try:
+                    pred = model.cluster_input(x, at_level=m_lvl - 1)
+                except TypeError:
+                    pred = model.cluster_input(x)
+
+                if b_idx == 0:
+                    _dbg(
+                        f"[CLASSIC][DEBUG] pred clusters (dataset lvl {d_lvl}, model lvl {m_lvl}) "
+                        f"shape={tuple(pred.shape)} | unique={pred.unique().tolist()}",
+                        debug,
+                    )
+
+                pred_by_lvl[d_lvl].append(pred)
+
+    radj = {}
+    for d_lvl in range(1, dataset_K + 1):
+        labels_list = [t for t in true_by_lvl[d_lvl] if t is not None]
+        preds_list = [t for t in pred_by_lvl[d_lvl] if t is not None]
+
+        if len(labels_list) == 0 or len(preds_list) == 0:
+            _dbg(
+                f"[CLASSIC][DEBUG] Dropping dataset level {d_lvl} (missing labels or preds)",
+                debug,
+            )
+            continue
+
+        y_true = torch.cat(labels_list, dim=0).cpu().numpy().ravel()
+        y_pred = torch.cat(preds_list, dim=0).cpu().numpy().ravel()
+
+        _dbg(
+            f"[CLASSIC][DEBUG] Final ARI eval lvl {d_lvl}: "
+            f"y_true unique={np.unique(y_true)}, "
+            f"y_pred unique={np.unique(y_pred)}",
+            debug,
+        )
+
+        radj[d_lvl] = [adjusted_rand_score(y_true, y_pred)]
+
+    return radj
+
+
+
+# def compute_CV_radj(cv_models: list, 
+#                     test_loader: DataLoader,
+#                     cv_val_loaders: list = None,
+#                    ):
+#     """
+#     Computes Cross-Validated ARI per hierarchical level.
+
+#     Returns:
+#       - if cv_val_loaders is None:
+#           test_radj: dict[level -> list of ARIs across folds]
+#       - else:
+#           overall_radj: dict[level -> (mean, std) over (val + test)]
+#           val_radj_stats: dict[level -> (mean, std) over val folds]
+#           test_radj: dict[level -> list of ARIs across folds]
+#     """
+#     # Infer number of levels
+#     batch = next(iter(test_loader))
+#     if isinstance(batch, dict):
+#         n_levels = len([key for key in batch.keys() if 'y' in key])
+#     else:
+#         n_levels = cv_models[0].n_levels
+#     level_list = list(range(1, n_levels + 1))
     
-    for key in true_clusters.keys():
-        labels_list = true_clusters[key]
-        
-        if None in labels_list or None in predicted_clusters[key]:
-            dset_radj.pop(key, None) # drop where levels were ignored
-        else:
-            labels_arr = torch.cat(labels_list, dim=0).detach().cpu().numpy().ravel()
-            predicted_arr = torch.cat(predicted_clusters[key], dim=0).detach().cpu().numpy().ravel()
-            predicted_arr = match_labels(labels_arr, predicted_arr)
+#     # Initialize per-level ARI lists for test
+#     test_radj = {lvl: [] for lvl in level_list}
 
-            # compute ARI for this fold, for this level
-            ari = adjusted_rand_score(labels_arr, predicted_arr)
-            dset_radj[key].append(ari)
-    return dset_radj
+#     # Compute ARI for each model/fold on the test loader
+#     for model in cv_models:
+#         dset_radj = compute_radj(model, test_loader, n_levels)  # dict[level -> [ari,...]]
+#         for lvl, aris in dset_radj.items():
+#             test_radj[lvl].extend(aris)
 
-def compute_CV_radj(cv_models: list, 
+#     if cv_val_loaders is not None:
+#         # Per-level ARI lists for validation
+#         val_radj = {lvl: [] for lvl in level_list}
+
+#         for model, loader in zip(cv_models, cv_val_loaders):
+#             dset_radj = compute_radj(model, loader, n_levels)
+#             for lvl, aris in dset_radj.items():
+#                 val_radj[lvl].extend(aris)
+
+#         # Compute per-level stats
+#         val_radj_stats = {}
+#         overall_radj = {}
+#         for lvl in level_list:
+#             val_arr = np.asarray(val_radj[lvl], dtype=float)
+#             test_arr = np.asarray(test_radj[lvl], dtype=float)
+#             all_arr = np.concatenate([val_arr, test_arr])
+
+#             val_radj_stats[lvl] = (val_arr.mean(), val_arr.std())
+#             overall_radj[lvl] = (all_arr.mean(), all_arr.std())
+
+#         return overall_radj, val_radj_stats, test_radj
+
+#     return test_radj
+
+def compute_CV_radj(cv_models: list,
                     test_loader: DataLoader,
-                    cv_val_loaders: list = None,
-                   ):
+                    cv_val_loaders: list | None = None):
     """
-    Computes Cross-Validated ARI per hierarchical level.
+    Cross-validated ARI (Radj) per *dataset level* (1..K),
+    where dataset level i maps to model level (N-K+i) if K < N.
 
-    Returns:
-      - if cv_val_loaders is None:
-          test_radj: dict[level -> list of ARIs across folds]
-      - else:
-          overall_radj: dict[level -> (mean, std) over (val + test)]
-          val_radj_stats: dict[level -> (mean, std) over val folds]
-          test_radj: dict[level -> list of ARIs across folds]
+    PBMC loader: batch is dict with keys X and y1..y4.
+    Classic loader: batch is tuple where batch[0]=X and batch[1:]=labels.
     """
-    # Infer number of levels
-    batch = next(iter(test_loader))
-    if isinstance(batch, dict):
-        n_levels = len([key for key in batch.keys() if 'y' in key])
-    else:
-        n_levels = cv_models[0].n_levels
-    level_list = list(range(1, n_levels + 1))
-    
-    # Initialize per-level ARI lists for test
+    first_batch = next(iter(test_loader))
+    is_pbmc = _infer_pbmc_loader(first_batch)
+    dataset_K = _count_dataset_levels(first_batch)
+
+    level_list = list(range(1, dataset_K + 1))
     test_radj = {lvl: [] for lvl in level_list}
 
-    # Compute ARI for each model/fold on the test loader
     for model in cv_models:
-        dset_radj = compute_radj(model, test_loader, n_levels)  # dict[level -> [ari,...]]
+        model_n_levels = getattr(model, "n_levels", 1)
+        if is_pbmc:
+            dset_radj = compute_radj_pbmc(model, test_loader, dataset_K, model_n_levels)
+        else:
+            dset_radj = compute_radj_classic(model, test_loader, dataset_K, model_n_levels)
+
         for lvl, aris in dset_radj.items():
             test_radj[lvl].extend(aris)
 
     if cv_val_loaders is not None:
-        # Per-level ARI lists for validation
         val_radj = {lvl: [] for lvl in level_list}
 
         for model, loader in zip(cv_models, cv_val_loaders):
-            dset_radj = compute_radj(model, loader, n_levels)
-            for lvl, aris in dset_radj.items():
-                val_radj[lvl].extend(aris)
+            first_val = next(iter(loader))
+            is_pbmc_val = _infer_pbmc_loader(first_val)
+            dataset_K_val = _count_dataset_levels(first_val)
 
-        # Compute per-level stats
+            # We assume val/test have same label scheme; if not, handle gracefully by intersection.
+            model_n_levels = getattr(model, "n_levels", 1)
+
+            if is_pbmc_val:
+                dset_radj = compute_radj_pbmc(model, loader, dataset_K_val, model_n_levels)
+            else:
+                dset_radj = compute_radj_classic(model, loader, dataset_K_val, model_n_levels)
+
+            for lvl, aris in dset_radj.items():
+                if lvl in val_radj:
+                    val_radj[lvl].extend(aris)
+
         val_radj_stats = {}
         overall_radj = {}
         for lvl in level_list:
             val_arr = np.asarray(val_radj[lvl], dtype=float)
             test_arr = np.asarray(test_radj[lvl], dtype=float)
-            all_arr = np.concatenate([val_arr, test_arr])
 
-            val_radj_stats[lvl] = (val_arr.mean(), val_arr.std())
+            # avoid nan if empty
+            if val_arr.size == 0 and test_arr.size == 0:
+                val_radj_stats[lvl] = (np.nan, np.nan)
+                overall_radj[lvl] = (np.nan, np.nan)
+                continue
+
+            all_arr = np.concatenate([val_arr, test_arr]) if val_arr.size else test_arr
+            val_radj_stats[lvl] = (val_arr.mean() if val_arr.size else np.nan,
+                                   val_arr.std() if val_arr.size else np.nan)
             overall_radj[lvl] = (all_arr.mean(), all_arr.std())
 
         return overall_radj, val_radj_stats, test_radj

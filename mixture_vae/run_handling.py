@@ -584,8 +584,8 @@ if __name__ == "__main__":
 
     # CV
     cv_momix = run_cv(config_momix, folds, val_loader, show_loss_every=1)
-    cv_mvae = run_cv(config_mvae, folds, val_loader, show_loss_every=1)
-    cv_indmom = run_cv(config_indmom, folds, val_loader, show_loss_every=1)
+    # cv_mvae = run_cv(config_mvae, folds, val_loader, show_loss_every=1)
+    # cv_indmom = run_cv(config_indmom, folds, val_loader, show_loss_every=1)
 
     # # --- Run ---
     # results_mvae = run_training(config_mvae, train_loader, val_loader)
