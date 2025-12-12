@@ -395,7 +395,7 @@ def training_mvae(
         if scheduler is not None and scheduler != False:
             scheduler.step()
 
-        if epoch % show_loss_every == 0:
+        if epoch == 1 or epoch % show_loss_every == 0:
             current_lr = optimizer.param_groups[0]["lr"]
             print(
                 f"epoch {epoch}: "
@@ -659,7 +659,7 @@ def training_momixvae(
         if scheduler is not None and scheduler != False:
             scheduler.step()
 
-        if epoch % show_loss_every == 0:
+        if epoch == 1 or epoch % show_loss_every == 0:
             current_lr = optimizer.param_groups[0]["lr"]
             print(
                 f"epoch {epoch}: "
