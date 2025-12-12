@@ -1,5 +1,6 @@
 import os, sys
 import torch
+import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 
 # To ensure the custom package is found

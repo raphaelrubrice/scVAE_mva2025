@@ -122,7 +122,7 @@ def training_mvae(
     beta_kl: float = 1,
     warmup: int | None = None,
     min_beta: float = 0.0,
-    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | bool | None = None,
     track_clusters: bool = False,
     patience: int | None = 5,
     tol: float | None = 0.0,
@@ -182,6 +182,8 @@ def training_mvae(
 
     if scheduler is None:
         scheduler, _lr_warmup_epochs = _build_default_cosine_scheduler(optimizer, epochs)
+    elif scheduler == False:
+        scheduler = None
 
     for epoch in tqdm(range(1, epochs + 1), desc="TRAINING"):
         beta_kl = all_betas[epoch - 1]
@@ -418,7 +420,7 @@ def training_momixvae(
     beta_kl: float = 1,
     warmup: int | None = None,
     min_beta: float = 0.0,
-    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | bool | None = None,
     track_clusters: bool = False,
     patience: int | None = 5,
     tol: float | None = 0.0,
@@ -475,6 +477,8 @@ def training_momixvae(
 
     if scheduler is None:
         scheduler, _lr_warmup_epochs = _build_default_cosine_scheduler(optimizer, epochs)
+    elif scheduler == False:
+        scheduler = None
 
     for epoch in tqdm(range(1, epochs + 1), desc="TRAINING"):
         beta_kl = all_betas[epoch - 1]
