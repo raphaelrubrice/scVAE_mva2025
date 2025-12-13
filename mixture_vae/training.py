@@ -238,6 +238,7 @@ def training_mvae(
 
             # backward + step
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
             optimizer.step()
 
             # [PATCH APPLIED]

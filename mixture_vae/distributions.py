@@ -466,10 +466,10 @@ class Student(Distribution):
         dim_mu = self.param_dims[1]
         
         # df > 0
-        constrained[:, :dim_df] = F.softplus(params[:, :dim_df]) + 1e-6
+        constrained[:, :dim_df] = (F.softplus(params[:, :dim_df]) + 1e-6).clamp_min(1e-3).clamp_max(1e3)
         # scale > 0
         start_scale = dim_df + dim_mu
-        constrained[:, start_scale:] = F.softplus(params[:, start_scale:]) + 1e-6
+        constrained[:, start_scale:] = (F.softplus(params[:, start_scale:]) + 1e-6).clamp_min(1e-6).clamp_max(1e3)
         
         return constrained
 
