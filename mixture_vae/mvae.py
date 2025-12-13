@@ -171,7 +171,7 @@ class MixtureVAE(nn.Module):
                                            output_dim=self.n_components,
                                            n_layers=self.n_layers,
                                            act_func=self.act_func,
-                                           final_act_func=nn.Softmax(), # probabilities
+                                           final_act_func=nn.Softmax(dim=1), # probabilities
                                            dropout=self.dropout,
                                            norm_layer=self.norm_layer)
         
@@ -334,16 +334,21 @@ class MixtureVAE(nn.Module):
 
             # obtain decoder output (parameters of the prior distirbution for each sample)
             latent_dim = self.latent_dim
-            input_params = self.decode(sampled_z.reshape(-1, latent_dim))
 
-            # log p(x|z,y)
-            # get reference parameters in correct shape
-            prior_input = self.prior_input
-            prior_params = prior_input.get_reference_params(batch_x)
-            log_p_x_zy = prior_input.log_likelihood(batch_x, 
-                                                    prior_params)
-            log_p_x_zy = log_p_x_zy.sum(dim=1).unsqueeze(1) # sum over data_dim => (batch,1)
-            log_p_x_zy = log_p_x_zy.expand(batch_size, N)
+            z_flat = sampled_z.reshape(batch_size * N, latent_dim)
+            x_params = self.decode(z_flat) 
+
+            # Align x with decoder params
+            # If likelihood is per-feature (e.g. NB for genes), x is (B, G).
+            # Repeat each x_i N times to match (B*N, G).
+            x_rep = batch_x.unsqueeze(1).expand(batch_size, N, batch_x.size(1)).reshape(batch_size * N, -1)
+
+            # log p(x|z,y): should depend on z through x_params
+            log_p_x_zy = self.prior_input.log_likelihood(x_rep, x_params)
+            # If log_likelihood returns per-feature contributions, sum over features:
+            if log_p_x_zy.ndim > 1:
+                log_p_x_zy = log_p_x_zy.sum(dim=1)
+            log_p_x_zy = log_p_x_zy.reshape(batch_size, N)
 
             # log p(z)
             prior_latent = self.prior_latent
@@ -364,19 +369,40 @@ class MixtureVAE(nn.Module):
             sumexp = torch.logsumexp(logspace_ratio, dim=1)
             return sumexp - torch.log(torch.tensor([N], device=sumexp.device)) # IWAE for each sample in batch_x
 
-def elbo_mixture_step(model: MixtureVAE, 
-                      x: torch.Tensor, 
-                      beta_kl=1.0, 
+def kl_marginal_usage(level_probas: torch.Tensor,
+                      ref_probas: torch.Tensor,
+                      eps: float = 1e-12) -> torch.Tensor:
+    """
+    used to encourage usage of all components
+    level_probas: (B,K) probabilities q(y|x)
+    ref_probas:   (K,) or (1,K) reference categorical probs p(y)
+    returns: scalar KL( mean_x q(y|x) || ref )
+    """
+    qbar = level_probas.mean(dim=0)                       # (K,)
+    qbar = qbar.clamp_min(eps)
+
+    if ref_probas.ndim == 2:
+        ref = ref_probas.squeeze(0)
+    else:
+        ref = ref_probas
+    ref = ref.to(qbar.device).clamp_min(eps)              # (K,)
+
+    kl = (qbar * (qbar.log() - ref.log())).sum()
+    return kl
+
+def elbo_mixture_step(model: MixtureVAE,
+                      x: torch.Tensor,
+                      beta_kl: float = 1.0,
+                      reg_marginal: float = 1.0,
                       track_clusters: bool = False,
-                      n_levels=1):
+                      n_levels: int = 1):
     # Forward (keeps all component samples)
-    (input_params, 
-     z_mixture, 
-     latent_params_mixture, 
-     cluster_probas, 
-     all_z, 
-     all_latent
-     ) = model(x)
+    (input_params,
+     z_mixture,
+     latent_params_mixture,
+     cluster_probas,
+     all_z,
+     all_latent) = model(x)
 
     # clusters
     if track_clusters:
@@ -387,77 +413,95 @@ def elbo_mixture_step(model: MixtureVAE,
     BATCH_SIZE = x.size(0)
     K = model.n_components
 
-    # see supplementary 1
-    # 1) Reconstruction: sum_k pi_k * E_{q_k} [ log p(x|z) ]
-    # One Monte carlo sample per component: z_k in all_z[k]
-    all_zk = torch.cat([all_z[k] for k in range(K)])
-    # params of p(x|z_k)
-    all_params_k = model.decode(all_zk) 
-    # compute log p(x|z_k)
-    log_px_per_k = model.log_likelihood_input(x.repeat(K, 1), all_params_k) 
-    # sum over features inside = shape B
-    log_px_per_k = torch.stack([log_px_per_k[i*BATCH_SIZE:(i+1)*BATCH_SIZE,:] 
-                                                 for i in range(K)], dim=1) # [B, K, input_dim]
-    recon = (cluster_probas.unsqueeze(2) * log_px_per_k).sum(dim=1).sum(dim=1).mean() # scalar
-    
-    # 2) Latent KL: sum_k pi_k * KL(q_k || p)
-    all_latent_k = torch.cat([all_latent[k] for k in range(K)])
-    # expects B after summing over latent dims internally
+    # 1) Reconstruction
+    all_zk = torch.cat([all_z[k] for k in range(K)], dim=0)
+    all_params_k = model.decode(all_zk)
+    log_px_per_k = model.log_likelihood_input(x.repeat(K, 1), all_params_k)
+    log_px_per_k = torch.stack(
+        [log_px_per_k[i*BATCH_SIZE:(i+1)*BATCH_SIZE, :] for i in range(K)],
+        dim=1
+    )  # (B, K, input_dim)
+    recon = (cluster_probas.unsqueeze(2) * log_px_per_k).sum(dim=1).sum(dim=1).mean()
+
+    # 2) Latent KL
+    all_latent_k = torch.cat([all_latent[k] for k in range(K)], dim=0)
     kl_per_k = model.kl_div(z=None, learned_params=all_latent_k)
-    # if kl_k has extra dims, reduce over latent dims here
     if kl_per_k.dim() > 1:
         kl_per_k = kl_per_k.sum(dim=1)
-    kl_per_k = torch.stack([kl_per_k[i*BATCH_SIZE:(i+1)*BATCH_SIZE] 
-                                                 for i in range(K)], dim=1) # [B, K]
-    kl_z = (cluster_probas * kl_per_k).sum(dim=1).mean()               # scalar
-    kl_z = kl_z
+    kl_per_k = torch.stack(
+        [kl_per_k[i*BATCH_SIZE:(i+1)*BATCH_SIZE] for i in range(K)],
+        dim=1
+    )  # (B, K)
+    kl_z = (cluster_probas * kl_per_k).sum(dim=1).mean()
 
-    # 3) Cluster KL: KL(π(x) || p(c))
+    # 3) Cluster KL (per-sample)
     ref = broadcast_cat_probs(model.prior_categorical.get_ref_proba(), cluster_probas)
-    kl_pi = (cluster_probas * (cluster_probas.clamp_min(1e-12).log() - ref.clamp_min(1e-12).log())).sum(dim=1).mean()
-    kl_pi = kl_pi
+    kl_pi = (cluster_probas * (cluster_probas.clamp_min(1e-12).log()
+                               - ref.clamp_min(1e-12).log())).sum(dim=1).mean()
 
-    # normalize per level to be able to compare with other MitureVAE
+    # 4) Marginal usage KL (dataset-level within batch)
+    kl_marg = torch.zeros((), device=cluster_probas.device, dtype=cluster_probas.dtype)
+    if reg_marginal is not None and reg_marginal > 0:
+        # Use the non-broadcast reference probs for KL(qbar || ref)
+        ref_probs = model.prior_categorical.get_ref_proba()
+        if not isinstance(ref_probs, torch.Tensor):
+            ref_probs = torch.tensor(ref_probs, device=cluster_probas.device, dtype=cluster_probas.dtype)
+        kl_marg = kl_marginal_usage(cluster_probas, ref_probs)
+
+    # normalize per level (keep kl_marg un-normalized by default; you can choose otherwise)
     recon = recon / n_levels
     kl_z = kl_z / n_levels
     kl_pi = kl_pi / n_levels
 
-    elbo = recon - beta_kl * (kl_z + kl_pi)
+    elbo = recon - beta_kl * (kl_z + kl_pi) - reg_marginal * kl_marg
     loss = -elbo
-    return loss, dict(recon=recon.detach(), 
-                    kl_latent=kl_z.detach(), 
-                    kl_cluster=kl_pi.detach()), clusters
-        
-def summed_elbo_mixture_step(model, x, beta_kl: float | None = None, track_clusters: bool =False):
-    """
-    
-    """
-    if beta_kl == None:
-        betas_kl = [1 for _ in range(len(model.branches))]
+
+    return loss, dict(
+        recon=recon.detach(),
+        kl_latent=kl_z.detach(),
+        kl_cluster=kl_pi.detach(),
+        kl_marginal=kl_marg.detach(),
+    ), clusters
+
+
+def summed_elbo_mixture_step(model,
+                            x,
+                            beta_kl: float | None = None,
+                            reg_marginal: float = 1.0,
+                            track_clusters: bool = False):
+    if beta_kl is None:
+        betas_kl = [1.0 for _ in range(len(model.branches))]
     else:
-        betas_kl = [beta_kl for _ in range(len(model.branches))]
+        betas_kl = [float(beta_kl) for _ in range(len(model.branches))]
 
-    P = {"recon":0,
-        "kl_latent":0,
-        "kl_cluster":0}
-    
-    L  = 0
+    P = {
+        "recon": 0.0,
+        "kl_latent": 0.0,
+        "kl_cluster": 0.0,
+        "kl_marginal": 0.0,
+    }
+
+    L = 0.0
     clusters = None
-    for idx, items in enumerate(zip(model.branches, betas_kl)):
-        m, beta = items
-        if track_clusters and idx == model.n_levels - 1:
-            track_clusters_level = True
-        else:
-            track_clusters_level = False
-        loss_value, parts, batch_clusters = elbo_mixture_step(m, x, beta, track_clusters_level, n_levels=model.n_levels)
 
-        L += (loss_value/len(model.branches))
-        
+    for idx, (m, beta) in enumerate(zip(model.branches, betas_kl)):
+        track_clusters_level = bool(track_clusters and idx == model.n_levels - 1)
+
+        loss_value, parts, batch_clusters = elbo_mixture_step(
+            m, x,
+            beta_kl=beta,
+            reg_marginal=reg_marginal,
+            track_clusters=track_clusters_level,
+            n_levels=model.n_levels
+        )
+
+        L += (loss_value / len(model.branches))
+
         if batch_clusters is not None:
             clusters = batch_clusters
 
         for pname in parts:
-            P[pname] += (parts[pname]/len(model.branches))
+            P[pname] += (parts[pname] / len(model.branches))
 
     return L, P, clusters
 
@@ -571,7 +615,7 @@ class MoMixVAE(nn.Module):
                                         output_dim=self.hierarchy_components[level],
                                         n_layers=self.n_layers,
                                         act_func=self.act_func,
-                                        final_act_func=nn.Softmax(), # probabilities
+                                        final_act_func=nn.Softmax(dim=1), # probabilities
                                         dropout=self.dropout,
                                         norm_layer=self.norm_layer)
             self.clustering_block.append(cluster_module)
@@ -796,14 +840,14 @@ class MoMixVAE(nn.Module):
                 B = learned_params.size(0)
                 z = self.all_posterior_latent[at_level].sample(learned_params, B)
                 log_q = self.all_posterior_latent[at_level].log_likelihood(z, learned_params)
-                log_p = self.prior_latent.log_likelihood(z, prior_params)
+                log_p = prior_latent.log_likelihood(z, prior_params)
                 return (log_q - log_p)
         else:
             # Monte Carlo estimate per z
             prior_latent = self.all_prior_latent[at_level]
             prior_params = prior_latent.get_reference_params(z)
             log_q = self.all_posterior_latent[at_level].log_likelihood(z, learned_params)
-            log_p = self.prior_latent.log_likelihood(z, prior_params)
+            log_p = prior_latent.log_likelihood(z, prior_params)
             # (average outside)
             return (log_q - log_p) # because kl loss = Eq[log q_z/p_z] and the average is done outside
     
@@ -842,16 +886,21 @@ class MoMixVAE(nn.Module):
             posterior_latent = self.all_posterior_latent[at_level]
             sampled_z = posterior_latent.sample(latent_params, batch_size)
 
-            # obtain decoder output (parameters of the prior distirbution for each sample)
-            input_params = self.decode(sampled_z.reshape(-1, self.latent_dim))
+            # Decode: parameters of p(x|z,y). Shape: (B*N, sum_x_paramdims)
+            z_flat = sampled_z.reshape(batch_size * N, self.latent_dim)
+            x_params = self.decode(z_flat) 
 
-            # log p(x|z,y)
-            # get reference parameters in correct shape
-            prior_params = self.prior_input.get_reference_params(batch_x)
-            log_p_x_zy = self.prior_input.log_likelihood(batch_x, 
-                                                    prior_params)
-            log_p_x_zy = log_p_x_zy.sum(dim=1).unsqueeze(1) # sum over data_dim => (batch,1)
-            log_p_x_zy = log_p_x_zy.expand(batch_size, N)
+            # Align x with decoder params
+            # If likelihood is per-feature (e.g. NB for genes), x is (B, G).
+            # Repeat each x_i N times to match (B*N, G).
+            x_rep = batch_x.unsqueeze(1).expand(batch_size, N, batch_x.size(1)).reshape(batch_size * N, -1)
+
+            # log p(x|z,y): should depend on z through x_params
+            log_p_x_zy = self.prior_input.log_likelihood(x_rep, x_params)
+            # If log_likelihood returns per-feature contributions, sum over features:
+            if log_p_x_zy.ndim > 1:
+                log_p_x_zy = log_p_x_zy.sum(dim=1)
+            log_p_x_zy = log_p_x_zy.reshape(batch_size, N)
 
             # log p(z)
             prior_latent = self.all_prior_latent[at_level]
@@ -870,164 +919,153 @@ class MoMixVAE(nn.Module):
             sumexp = torch.logsumexp(logspace_ratio, dim=1)
             return sumexp - torch.log(torch.tensor([N], device=sumexp.device)) # IWAE for each sample in batch_x
 
-
-def compute_level(level_data):
+def compute_level(level_data, reg_marginal: float = 1.0):
     """Used if forking is enabled in the model elbo step"""
     x = level_data["x"]
     BATCH_SIZE = x.size(0)
 
     model = level_data["model"]
     level = level_data["level"]
-    joint_probas = level_data["joint_probas"]
-    level_probas = level_data["level_probas"]
+    joint_probas = level_data["joint_probas"]       # (B, n_comb)
+    level_probas = level_data["level_probas"]       # (B, K_level)
 
-    # see supplementary 1
-    # 1) Reconstruction: sum_k pi_k * E_{q_k} [ log p(x|z) ]
-    # One Monte carlo sample per combination of components: z_k in all_z[level][combination]
-    log_px_per_combinations = []
     all_z_level = level_data["all_z_level"]
     all_latent_level = level_data["all_latent_level"]
     level_n_combinations = len(all_z_level)
-    # to avoid python loops, we process all combinations at the same time
-    all_z_comb = [all_z_level[comb] for comb in range(level_n_combinations)]
-    all_z_comb = torch.cat(all_z_comb, dim=0)
-    
-    # params of p(x|z_k)
-    params_comb = model.decode(all_z_comb) 
-    # compute log p(x|z_k)
-    log_px_per_combinations = model.log_likelihood_input(x.repeat(level_n_combinations,1), params_comb)
-    # We then need reformat to have B x n_combinations x input_dim
-    log_px_per_combinations = torch.stack([log_px_per_combinations[i*BATCH_SIZE:(i+1)*BATCH_SIZE,:] 
-                                            for i in range(level_n_combinations)], dim=1)
-    # sum over features inside = shape B
-    # for each combiantion we get the pi_k (logq - log p), then we sum over the combinations and finally we take the Expected value
-    recon = (joint_probas.unsqueeze(2) * log_px_per_combinations).sum(dim=1).sum(dim=1).mean() # scalar
-    
-    # 2) Latent KL: sum_k pi_k * KL(q_k || p)
-    kl_per_combinations = []
-    all_latent_comb = [all_latent_level[comb] for comb in range(level_n_combinations)]
-    all_latent_comb = torch.cat(all_latent_comb, dim=0)
-    # expects B after summing over latent dims internally
-    kl_per_combinations = model.kl_div(z=None, learned_params=all_latent_comb, at_level=level)
-    kl_per_combinations = torch.stack([kl_per_combinations[i*BATCH_SIZE:(i+1)*BATCH_SIZE] 
-                                            for i in range(level_n_combinations)], dim=1)
-    
-    # if kl_k has extra dims, reduce over latent dims here
-    if kl_per_combinations.dim() > 1:
-        kl_per_combinations = kl_per_combinations.sum(dim=1)
-    kl_z = (joint_probas.unsqueeze(2) * kl_per_combinations).sum(dim=1).mean()               # scalar
 
-    # 3) Cluster KL: KL(π(x) || p(c))
-    ref = broadcast_cat_probs(model.all_prior_categorical[level].get_ref_proba(), level_probas)
-    # for each level 
-    kl_pi = (level_probas * (level_probas.clamp_min(1e-12).log() - ref.clamp_min(1e-12).log())).sum(dim=1).mean()
-    return recon, kl_z, kl_pi
+    # 1) Reconstruction
+    all_z_comb = torch.cat([all_z_level[comb] for comb in range(level_n_combinations)], dim=0)
+    params_comb = model.decode(all_z_comb)
+    log_px = model.log_likelihood_input(x.repeat(level_n_combinations, 1), params_comb)
+    log_px = torch.stack([log_px[i*BATCH_SIZE:(i+1)*BATCH_SIZE, :]
+                          for i in range(level_n_combinations)], dim=1)  # (B, n_comb, D)
+    recon = (joint_probas.unsqueeze(2) * log_px).sum(dim=1).sum(dim=1).mean()
 
-def elbo_MoMix_step(model: MoMixVAE, 
-                      x: torch.Tensor, 
-                      beta_kl=1.0, 
-                      track_clusters: bool = False,
-                      jit: bool = False):
-    # t0 = time.time()
-    # Forward (keeps all component samples)
-    (input_params, 
-     z_mixture, 
-     latent_params_mixture, 
-     cluster_probas, 
-     all_z, 
+    # 2) Latent KL
+    all_latent_comb = torch.cat([all_latent_level[comb] for comb in range(level_n_combinations)], dim=0)
+    kl_vals = model.kl_div(z=None, learned_params=all_latent_comb, at_level=level)  # expected (B*n_comb,)
+    kl_vals = torch.stack([kl_vals[i*BATCH_SIZE:(i+1)*BATCH_SIZE]
+                           for i in range(level_n_combinations)], dim=1)           # (B, n_comb)
+    kl_z = (joint_probas * kl_vals).sum(dim=1).mean()
+
+    # 3) Cluster KL (per-sample)
+    ref = model.all_prior_categorical[level].get_ref_proba()  # (K,) or (1,K)
+    ref_b = broadcast_cat_probs(ref, level_probas)            # (B,K)
+    kl_pi = (level_probas * (level_probas.clamp_min(1e-12).log()
+                             - ref_b.clamp_min(1e-12).log())).sum(dim=1).mean()
+
+    # 4) Marginal usage KL (dataset-level within batch)
+    kl_marg = 0.0
+    if reg_marginal and reg_marginal > 0:
+        # use the *non-broadcast* reference for KL(qbar||ref)
+        if isinstance(ref, torch.Tensor):
+            ref_probs = ref
+        else:
+            ref_probs = torch.tensor(ref, device=level_probas.device, dtype=level_probas.dtype)
+        kl_marg = kl_marginal_usage(level_probas, ref_probs)
+
+    return recon, kl_z, kl_pi, kl_marg
+
+
+def elbo_MoMix_step(model: MoMixVAE,
+                    x: torch.Tensor,
+                    beta_kl: float = 1.0,
+                    reg_marginal: float = 1.0,
+                    track_clusters: bool = False,
+                    jit: bool = False):
+
+    (input_params,
+     z_mixture,
+     latent_params_mixture,
+     cluster_probas,
+     all_z,
      all_latent,
      all_z_mix,
      all_latent_mix,
      all_cluster_probas,
-     all_cross_level_probas,
-     ) = model(x)
+     all_cross_level_probas) = model(x)
 
-    # clusters
-    if track_clusters:
-        clusters = model.cluster_input(cluster_probas=cluster_probas)
-    else:
-        clusters = None
-        
+    clusters = model.cluster_input(cluster_probas=cluster_probas) if track_clusters else None
     BATCH_SIZE = x.size(0)
-    # K = model.n_components
 
-    if jit: # attempt at using forking for faster loss computation => no speed up observed
+    if jit:
         futures = []
         for level in range(model.n_levels):
-            level_data = {"x":x,
-                        "model": model, 
-                        "level": level,
-                        "joint_probas": all_cross_level_probas[level],
-                        "level_probas": all_cluster_probas[level],
-                        "all_z_level": all_z[level],
-                        "all_latent_level": all_latent[level]}
-            futures.append(torch.jit.fork(compute_level, level_data))
+            level_data = dict(
+                x=x,
+                model=model,
+                level=level,
+                joint_probas=all_cross_level_probas[level],
+                level_probas=all_cluster_probas[level],
+                all_z_level=all_z[level],
+                all_latent_level=all_latent[level],
+            )
+            futures.append(torch.jit.fork(compute_level, level_data, reg_marginal))
 
         results = [torch.jit.wait(f) for f in futures]
 
-        recon = torch.cat([out[0].ravel() for out in results]).sum()
-        kl_z = torch.cat([out[1].ravel() for out in results]).sum()
-        kl_pi = torch.cat([out[2].ravel() for out in results]).sum()
+        recon = torch.stack([out[0] for out in results]).sum()
+        kl_z  = torch.stack([out[1] for out in results]).sum()
+        kl_pi = torch.stack([out[2] for out in results]).sum()
+        kl_marg = torch.stack([out[3] for out in results]).sum()
+
     else:
-        recon = 0
-        kl_z = 0
-        kl_pi = 0
-        for level in range(model.n_levels): # PARALLELIZE
-            joint_probas = all_cross_level_probas[level]
-            level_probas = all_cluster_probas[level]
-            # see supplementary 1
-            # 1) Reconstruction: sum_k pi_k * E_{q_k} [ log p(x|z) ]
-            # One Monte carlo sample per combination of components: z_k in all_z[level][combination]
-            log_px_per_combinations = []
+        recon = 0.0
+        kl_z = 0.0
+        kl_pi = 0.0
+        kl_marg = 0.0
+
+        for level in range(model.n_levels):
+            joint_probas = all_cross_level_probas[level]  # (B, n_comb)
+            level_probas = all_cluster_probas[level]      # (B, K_level)
             level_n_combinations = len(all_z[level])
 
-            # to avoid python loops, we process all combinations at the same time
-            all_z_comb = [all_z[level][comb] for comb in range(level_n_combinations)]
-            all_z_comb = torch.cat(all_z_comb, dim=0)
-            
-            # params of p(x|z_k)
-            params_comb = model.decode(all_z_comb) 
-            # compute log p(x|z_k)
-            log_px_per_combinations = model.log_likelihood_input(x.repeat(level_n_combinations,1), params_comb)
-            # We then need reformat to have B x n_combinations x input_dim
-            log_px_per_combinations = torch.stack([log_px_per_combinations[i*BATCH_SIZE:(i+1)*BATCH_SIZE,:] 
-                                                 for i in range(level_n_combinations)], dim=1)
-            # sum over features inside = shape B
-            # for each combiantion we get the pi_k (logq - log p), then we sum over the combinations
-            # the sum over the features and finally we take the Expected value over the batch
-            recon = recon + (joint_probas.unsqueeze(2) * log_px_per_combinations).sum(dim=1).sum(dim=1).mean() # scalar
-            
-            # 2) Latent KL: sum_k pi_k * KL(q_k || p)
-            kl_per_combinations = []
-            all_latent_comb = [all_latent[level][comb] for comb in range(level_n_combinations)]
-            all_latent_comb = torch.cat(all_latent_comb, dim=0)
-            # expects B after summing over latent dims internally
-            kl_per_combinations = model.kl_div(z=None, learned_params=all_latent_comb, at_level=level)
-            kl_per_combinations = torch.stack([kl_per_combinations[i*BATCH_SIZE:(i+1)*BATCH_SIZE] 
-                                                 for i in range(level_n_combinations)], dim=1)
-            # if kl_k has extra dims, reduce over latent dims here
-            if kl_per_combinations.dim() > 1:
-                kl_per_combinations = kl_per_combinations.sum(dim=1)
-            kl_z = kl_z + (joint_probas.unsqueeze(2) * kl_per_combinations).sum(dim=1).mean()               # scalar
-            kl_z = kl_z
-            
-            # 3) Cluster KL: KL(π(x) || p(c))
-            ref = broadcast_cat_probs(model.all_prior_categorical[level].get_ref_proba(), level_probas)
-            # for each level 
-            kl_pi = kl_pi + (level_probas * (level_probas.clamp_min(1e-12).log() - ref.clamp_min(1e-12).log())).sum(dim=1).mean()
-            kl_pi = kl_pi
+            # 1) Reconstruction
+            all_z_comb = torch.cat([all_z[level][comb] for comb in range(level_n_combinations)], dim=0)
+            params_comb = model.decode(all_z_comb)
+            log_px = model.log_likelihood_input(x.repeat(level_n_combinations, 1), params_comb)
+            log_px = torch.stack([log_px[i*BATCH_SIZE:(i+1)*BATCH_SIZE, :]
+                                  for i in range(level_n_combinations)], dim=1)  # (B, n_comb, D)
+            recon = recon + (joint_probas.unsqueeze(2) * log_px).sum(dim=1).sum(dim=1).mean()
 
-    # normalize per level to be able to compare with other MitureVAE
-    recon = recon / model.n_levels
-    kl_z = kl_z / model.n_levels
-    kl_pi = kl_pi / model.n_levels
+            # 2) Latent KL
+            all_latent_comb = torch.cat([all_latent[level][comb] for comb in range(level_n_combinations)], dim=0)
+            kl_vals = model.kl_div(z=None, learned_params=all_latent_comb, at_level=level)
+            kl_vals = torch.stack([kl_vals[i*BATCH_SIZE:(i+1)*BATCH_SIZE]
+                                   for i in range(level_n_combinations)], dim=1)  # (B, n_comb)
+            kl_z = kl_z + (joint_probas * kl_vals).sum(dim=1).mean()
 
-    elbo = recon - beta_kl * (kl_z + kl_pi)
+            # 3) Cluster KL (per-sample)
+            ref = model.all_prior_categorical[level].get_ref_proba()
+            ref_b = broadcast_cat_probs(ref, level_probas)
+            kl_pi = kl_pi + (level_probas * (level_probas.clamp_min(1e-12).log()
+                                             - ref_b.clamp_min(1e-12).log())).sum(dim=1).mean()
+
+            # 4) Marginal usage KL (batch marginal as proxy for dataset marginal)
+            if reg_marginal and reg_marginal > 0:
+                ref_probs = ref
+                if not isinstance(ref_probs, torch.Tensor):
+                    ref_probs = torch.tensor(ref_probs, device=level_probas.device,
+                                             dtype=level_probas.dtype)
+                kl_marg = kl_marg + kl_marginal_usage(level_probas, ref_probs)
+
+    # normalize per level to compare with other variants
+    recon   = recon / model.n_levels
+    kl_z    = kl_z / model.n_levels
+    kl_pi   = kl_pi / model.n_levels
+    
+    # not for the kl marginal because it is already substantially lower than others in scale
+
+    elbo = recon - beta_kl * (kl_z + kl_pi) - reg_marginal * kl_marg
     loss = -elbo
-    # print("Step took", time.time() - t0)
-    return loss, dict(recon=recon.detach(), 
-                    kl_latent=kl_z.detach(),
-                    kl_cluster=kl_pi.detach()), clusters
+
+    return loss, dict(
+        recon=recon.detach(),
+        kl_latent=kl_z.detach(),
+        kl_cluster=kl_pi.detach(),
+        kl_marginal=kl_marg.detach(),
+    ), clusters
+
 
 def IWAE(model, batch_x, N = 500):
     """

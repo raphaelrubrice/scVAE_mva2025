@@ -8,13 +8,12 @@ path_to_repo = "/".join(os.path.abspath(__file__).split("/")[:-2])
 if path_to_repo not in sys.path:
     sys.path.append(path_to_repo)
 
-from mixture_vae.distributions import NormalDistribution, CategoricalDistribution, NegativeBinomial
+from mixture_vae.distributions import NormalDistribution, CategoricalDistribution, NegativeBinomial, Student
 from mixture_vae.mvae import MoMixVAE
 from mixture_vae.training import training_momixvae
 from mixture_vae.viz import plot_loss_components, plot_latent
 from mixture_vae.saving import load_model
-from mixture_vae.utils import compute_ll
-from mixture_vae.utils import initialize_gmm_params
+from mixture_vae.utils import *
 
 if __name__ == "__main__":
     # ensures the working dir is that of the file
@@ -27,15 +26,14 @@ if __name__ == "__main__":
     # Train Toy data
     # -------------------------
     n_genes = 5
-    X = torch.randint(0, 50, (5000, 5), dtype=torch.float)
-    Y = nn.functional.one_hot(torch.randint(0, 3, (5000,1), dtype=torch.long))
+    K = 4
+    X, Y, _, _ = make_toy_nb_mixture(N=5000, n_genes=n_genes, K=K, seed=0, r=10.0)
     
     dataset = TensorDataset(X, Y)
     dataloader = DataLoader(dataset, batch_size=512, shuffle=False)
 
     # Val Toy data
-    X_val = torch.randint(0, 50, (500, 5), dtype=torch.float)
-    Y_val = nn.functional.one_hot(torch.randint(0, 3, (500,1), dtype=torch.long))
+    X_val, Y_val, _, _ = make_toy_nb_mixture(N=500, n_genes=n_genes, K=K, seed=1, r=10.0)
     val_dataset = TensorDataset(X_val, Y_val)
     val_dataloader = DataLoader(val_dataset, batch_size=256, shuffle=False)
 
@@ -43,16 +41,15 @@ if __name__ == "__main__":
     # Problem setup
     # -------------------------
     input_dim = n_genes
-    hidden_dim = 16
-    hierarchy_components = [2, 3]
+    hidden_dim = 64
+    hierarchy_components = [2,3,K]
     latent_dim = 2
 
     # -------------------------
     # Prior on input gene counts: NB for each gene
     # -------------------------
-    p = 0.5 * torch.ones((1, input_dim), device=device)
-    r = torch.mean(X.to(device), dim=0).reshape(1, -1)  # prior = average count in train data
-    prior_input = NegativeBinomial({"p": p, "r": r})
+    params = init_nb_params_mom(dataloader, "cpu")
+    prior_input = NegativeBinomial(params)
 
     # -------------------------
     # NEW: data-dependent priors per level (PCA + KMeans)
@@ -61,9 +58,11 @@ if __name__ == "__main__":
     all_prior_latent = []
 
     for K in hierarchy_components:
-        cat_params, latent_params = initialize_gmm_params(
+        latent_params = initialize_gmm_params(
             dataloader, n_components=K, latent_dim=latent_dim, device=device
         )
+    
+        cat_params = init_categorical_uniform(K, device)
 
         # Categorical prior p(y_level): non-uniform init via probs
         prior_categorical = CategoricalDistribution(cat_params)
@@ -71,7 +70,8 @@ if __name__ == "__main__":
 
         # Latent prior p(z | y_level): component-specific (K, D) init
         # NOTE: This requires your NormalDistribution to accept (K,D) in ref_parameters
-        prior_latent_level = NormalDistribution(latent_params)
+        latent_params = initialize_student_prior_params_from_gmm(latent_params, device, df0=10)
+        prior_latent_level = Student(latent_params) #NormalDistribution(latent_params)
         all_prior_latent.append(prior_latent_level)
 
     # -------------------------
@@ -82,7 +82,9 @@ if __name__ == "__main__":
     for _K in hierarchy_components:
         mu0 = torch.zeros((1, latent_dim), device=device)
         std0 = torch.ones((1, latent_dim), device=device)
-        posterior_latent = NormalDistribution({"mu": mu0, "std": std0})
+        df0 = torch.ones((1, latent_dim), device=device) * 10.0
+        
+        posterior_latent = Student({"df": df0, "mu": mu0, "std": std0}) #NormalDistribution({"mu": mu0, "std": std0})
         all_posterior_latent.append(posterior_latent)
 
     # -------------------------
@@ -101,8 +103,9 @@ if __name__ == "__main__":
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    EPOCHS = 50
+    EPOCHS = 1
     BETA_KL = 0.5
+    REG_MARG = 10 # controls the "careful, use all components" message to the network
     WARMUP = None
     PATIENCE = 5
     TOL = 5e-3
@@ -115,6 +118,7 @@ if __name__ == "__main__":
         optimizer,
         epochs=EPOCHS,
         beta_kl=BETA_KL,
+        reg_marg=REG_MARG,
         warmup=WARMUP,
         patience=PATIENCE,
         tol=TOL,
@@ -128,7 +132,7 @@ if __name__ == "__main__":
     model.to(device)
 
     print("Testing loaded model")
-    compute_ll(model, val_dataloader)
+    print(compute_ll(model, val_dataloader))
 
     # plot training and validation losses
     plot_loss_components(
@@ -158,3 +162,12 @@ if __name__ == "__main__":
         title="Latent Space",
         save_path=f"./{model.__class__.__name__}_true_latent.pdf"
     )
+
+    radj = compute_radj_classic(
+                        model,
+                        val_dataloader,
+                        1,
+                        model.n_levels,
+                        debug=True,
+                    )
+    print("Radj", radj)

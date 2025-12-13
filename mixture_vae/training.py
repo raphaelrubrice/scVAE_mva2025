@@ -14,7 +14,7 @@ if path_to_repo not in sys.path:
 from mixture_vae.mvae import MixtureVAE, elbo_mixture_step, MoMixVAE, elbo_MoMix_step, ind_MoMVAE, summed_elbo_mixture_step
 from mixture_vae.viz import plot_loss_components, plot_latent
 from mixture_vae.saving import save_model, load_model
-from mixture_vae.utils import compute_ll, initialize_gmm_params
+from mixture_vae.utils import *
 
 class EarlyStopping(object):
     """
@@ -61,10 +61,10 @@ class EarlyStopping(object):
             return True
         return False
 
-def format_loss(val_epoch_parts, beta_kl):
+def format_loss(val_epoch_parts, beta_kl, reg_marg=0.0):
     """
     print the loss components in the form:
-    -recon - beta_kl * (kl_latent + kl_cluster)
+    -recon + beta_kl * (kl_latent + kl_cluster)
     while handling signs cleanly (no '--' or '+ -').
     """
     recon = val_epoch_parts["recon"][-1]
@@ -81,6 +81,11 @@ def format_loss(val_epoch_parts, beta_kl):
     kl_latent_str = f"{kl_latent:.3f}"
 
     kl_cluster_str = f"{kl_cluster:.3f}"
+
+    if "kl_marginal" in val_epoch_parts.keys():
+        kl_marg = val_epoch_parts["kl_marginal"][-1]
+        kl_marg_str = f"{kl_marg:.3f}"
+        return f"{recon_str} + {beta_kl:.3f} * ({kl_latent_str} + ({kl_cluster_str})) + {reg_marg:.3f} * {kl_marg_str}"
 
     return f"{recon_str} + {beta_kl:.3f} * ({kl_latent_str} + ({kl_cluster_str}))"
 
@@ -120,6 +125,7 @@ def training_mvae(
     optimizer: torch.optim.Optimizer,
     epochs: int = 50,
     beta_kl: float = 1,
+    reg_marg: float = 2,
     warmup: int | None = None,
     min_beta: float = 0.0,
     scheduler: torch.optim.lr_scheduler.LRScheduler | bool | None = None,
@@ -178,6 +184,10 @@ def training_mvae(
         "train": {"recon": [], "kl_latent": [], "kl_cluster": []},
         "val": {"recon": [], "kl_latent": [], "kl_cluster": []},
     }
+    if reg_marg > 0:
+        all_parts["train"]["kl_marginal"] = []
+        all_parts["val"]["kl_marginal"] = []
+        
     clusters = {"train": [], "val": []}
 
     if scheduler is None:
@@ -194,7 +204,7 @@ def training_mvae(
         model.train()
         epoch_loss = 0.0
         # Initialize lists to store detached tensors on GPU
-        epoch_parts = {"recon": [], "kl_latent": [], "kl_cluster": []}
+        epoch_parts = {key:[] for key in all_parts["train"].keys()}
         epoch_clusters = []
 
         for batch in tqdm_func(dataloader, desc=f"Epoch {epoch} (train)", total=len(dataloader)):
@@ -213,6 +223,7 @@ def training_mvae(
                     model,
                     x,
                     beta_kl=beta_kl,
+                    reg_marginal=reg_marg,
                     track_clusters=track_clusters,
                 )
 
@@ -221,6 +232,7 @@ def training_mvae(
                     model,
                     x,
                     beta_kl=beta_kl,
+                    reg_marginal=reg_marg,
                     track_clusters=track_clusters,
                 )
 
@@ -272,7 +284,7 @@ def training_mvae(
         # ==========================
         model.eval()
         val_epoch_loss = 0.0
-        val_epoch_parts = {"recon": [], "kl_latent": [], "kl_cluster": []}
+        val_epoch_parts = {key:[] for key in all_parts["val"].keys()}
         val_epoch_clusters = []
 
         with torch.no_grad():
@@ -290,6 +302,7 @@ def training_mvae(
                         model,
                         x,
                         beta_kl=beta_kl,
+                        reg_marginal=reg_marg,
                         track_clusters=track_clusters,
                     )
 
@@ -298,6 +311,7 @@ def training_mvae(
                         model,
                         x,
                         beta_kl=beta_kl,
+                        reg_marginal=reg_marg,
                         track_clusters=track_clusters,
                     )
 
@@ -385,10 +399,14 @@ def training_mvae(
         clusters["val"].append(val_epoch_clusters)
 
         if epoch == 1:
+            if reg_marg > 0:
+                addon = " + reg_marg * kl_marg"
+            else:
+                addon = ""
             print(
                 "Loss printing format:\n"
-                "epoch x: val = loss (-recon + beta_kl * (kl_latent + kl_cluster)) | "
-                "train = loss (-recon + beta_kl * (kl_latent + kl_cluster))"
+                f"epoch x: val = loss (-recon + beta_kl * (kl_latent + kl_cluster){addon}) | "
+                f"train = loss (-recon + beta_kl * (kl_latent + kl_cluster){addon})"
                 " | lr=current_lr\n"
             )
         
@@ -399,8 +417,8 @@ def training_mvae(
             current_lr = optimizer.param_groups[0]["lr"]
             print(
                 f"epoch {epoch}: "
-                f"val = {losses['val'][-1]:.3f} ({format_loss(val_epoch_parts, beta_kl)}) | "
-                f"train = {losses['train'][-1]:.3f} ({format_loss(epoch_parts, beta_kl)})"
+                f"val = {losses['val'][-1]:.3f} ({format_loss(val_epoch_parts, beta_kl, reg_marg)}) | "
+                f"train = {losses['train'][-1]:.3f} ({format_loss(val_epoch_parts, beta_kl, reg_marg)})"
                 f" | lr={current_lr:.3e} "
             )
     
@@ -418,13 +436,14 @@ def training_momixvae(
     optimizer: torch.optim.Optimizer,
     epochs: int = 50,
     beta_kl: float = 1,
+    reg_marg: float = 2,
     warmup: int | None = None,
     min_beta: float = 0.0,
     scheduler: torch.optim.lr_scheduler.LRScheduler | bool | None = None,
     track_clusters: bool = False,
     patience: int | None = 5,
     tol: float | None = 0.0,
-    show_loss_every: int = 10,
+    show_loss_every: int = 1,
     progress_bar=False,
     save_path=None,
 ):
@@ -469,10 +488,16 @@ def training_momixvae(
     early_stopper = EarlyStopping(patience, tol) if patience is not None else None
 
     losses = {"train": [], "val": []}
+    
     all_parts = {
         "train": {"recon": [], "kl_latent": [], "kl_cluster": []},
         "val": {"recon": [], "kl_latent": [], "kl_cluster": []},
     }
+
+    if reg_marg > 0:
+        all_parts["train"]["kl_marginal"] = []
+        all_parts["val"]["kl_marginal"] = []
+
     clusters = {"train": [], "val": []}
 
     if scheduler is None:
@@ -489,7 +514,7 @@ def training_momixvae(
         model.train()
         epoch_loss = 0.0
         # Initialize lists to store detached tensors on GPU
-        epoch_parts = {"recon": [], "kl_latent": [], "kl_cluster": []}
+        epoch_parts = {key:[] for key in all_parts["train"].keys()}
         epoch_clusters = []
 
         for batch in tqdm_func(dataloader, desc=f"Epoch {epoch} (train)", total=len(dataloader)):
@@ -507,10 +532,12 @@ def training_momixvae(
                 model,
                 x,
                 beta_kl=beta_kl,
+                reg_marginal=reg_marg,
                 track_clusters=track_clusters,
             )
 
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
             optimizer.step()
 
             # [PATCH APPLIED]
@@ -550,7 +577,7 @@ def training_momixvae(
         # ==========================
         model.eval()
         val_epoch_loss = 0.0
-        val_epoch_parts = {"recon": [], "kl_latent": [], "kl_cluster": []}
+        val_epoch_parts = {key:[] for key in all_parts["val"].keys()}
         val_epoch_clusters = []
 
         with torch.no_grad():
@@ -567,6 +594,7 @@ def training_momixvae(
                     model,
                     x,
                     beta_kl=beta_kl,
+                    reg_marginal=reg_marg,
                     track_clusters=track_clusters,
                 )
 
@@ -648,23 +676,27 @@ def training_momixvae(
         clusters["val"].append(val_epoch_clusters)
 
         if epoch == 1:
+            if reg_marg > 0:
+                addon = " + reg_marg * kl_marg"
+            else:
+                addon = ""
             print(
                 "Loss printing format:\n"
-                "epoch x: val = loss (-recon + beta_kl * (kl_latent + kl_cluster)) | "
-                "train = loss (-recon + beta_kl * (kl_latent + kl_cluster))"
+                f"epoch x: val = loss (-recon + beta_kl * (kl_latent + kl_cluster){addon}) | "
+                f"train = loss (-recon + beta_kl * (kl_latent + kl_cluster){addon})"
                 " | lr=current_lr\n"
             )
 
         # step LR scheduler once per epoch (after epoch work)
         if scheduler is not None and scheduler != False:
             scheduler.step()
-
+        
         if epoch == 1 or epoch % show_loss_every == 0:
             current_lr = optimizer.param_groups[0]["lr"]
             print(
                 f"epoch {epoch}: "
-                f"val = {losses['val'][-1]:.3f} ({format_loss(val_epoch_parts, beta_kl)}) | "
-                f"train = {losses['train'][-1]:.3f} ({format_loss(epoch_parts, beta_kl)})"
+                f"val = {losses['val'][-1]:.3f} ({format_loss(val_epoch_parts, beta_kl, reg_marg)}) | "
+                f"train = {losses['train'][-1]:.3f} ({format_loss(epoch_parts, beta_kl, reg_marg)})"
                 f" | lr={current_lr:.3e} "
             )
 
@@ -721,6 +753,7 @@ if __name__ == "__main__":
 
     from mixture_vae.distributions import (
         NormalDistribution,
+        Student,
         NegativeBinomial,
         CategoricalDistribution,   # <-- NEW
     )
@@ -733,31 +766,30 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Train toy data
-    X = torch.randint(0, 50, (5000, 5), dtype=torch.float)
-    Y = torch.randint(0, 3, (5000,1), dtype=torch.float)
+    n_genes = 5
+    K = 4
+    X, Y, _, _ = make_toy_nb_mixture(N=5000, n_genes=n_genes, K=K, seed=0, r=10.0)
     
     dataset = TensorDataset(X, Y)
     dataloader = DataLoader(dataset, batch_size=512, shuffle=False)
 
     # Val Toy data
-    X_val = torch.randint(0, 50, (500, 5), dtype=torch.float)
-    Y_val = torch.randint(0, 3, (500,1), dtype=torch.float)
+    X_val, Y_val, _, _ = make_toy_nb_mixture(N=500, n_genes=n_genes, K=K, seed=1, r=10.0)
     val_dataset = TensorDataset(X_val, Y_val)
     val_dataloader = DataLoader(val_dataset, batch_size=256, shuffle=False)
 
     # -------------------------
     # Problem setup
     # -------------------------
-    input_dim = 5
-    hidden_dim = 16
+    input_dim = n_genes
+    hidden_dim = 64
     latent_dim = 2
 
     # -------------------------
     # Prior on input gene counts: NB for each gene
     # -------------------------
-    p = 0.5 * torch.ones((1, input_dim), device=device)
-    r = torch.mean(X.to(device), dim=0).reshape(1, -1)
-    prior_input = NegativeBinomial({"p": p, "r": r})
+    params = init_nb_params_mom(dataloader, "cpu")
+    prior_input = NegativeBinomial(params)
 
     # -------------------------
     # Posterior on latent: Gaussian on R^D (shared across all models/branches)
@@ -765,24 +797,28 @@ if __name__ == "__main__":
     # -------------------------
     mu0 = torch.zeros((1, latent_dim), device=device)
     std0 = torch.ones((1, latent_dim), device=device)
-    posterior_latent = NormalDistribution({"mu": mu0, "std": std0})
+    df0 = torch.ones((1, latent_dim), device=device) * 10.0
+    
+    posterior_latent = Student({"df": df0, "mu": mu0, "std": std0}) #NormalDistribution({"mu": mu0, "std": std0})
 
     # ============================================================
     # Model 0: MixtureVAE (single mixture)
     # ============================================================
     if model_type == 0:
-        n_components = 3
+        n_components = K
 
         # NEW: PCA+KMeans init for this K
-        cat_params, latent_params = initialize_gmm_params(
+        latent_params = initialize_gmm_params(
             dataloader, n_components=n_components, latent_dim=latent_dim, device=device
         )
+        cat_params = init_categorical_uniform(n_components, device)
 
         # NEW: non-uniform categorical prior
         prior_categorical = CategoricalDistribution(cat_params)
 
         # NEW: component-specific latent prior (mu/std are (K,D))
-        prior_latent = NormalDistribution(latent_params)
+        latent_params = initialize_student_prior_params_from_gmm(latent_params, device, df0=10)
+        prior_latent = Student(latent_params) #NormalDistribution(latent_params)
 
         model = MixtureVAE(
             input_dim=input_dim,
@@ -799,17 +835,19 @@ if __name__ == "__main__":
     # Model 1: ind_MoMVAE (multiple independent branches)
     # ============================================================
     elif model_type == 1:
-        branch_components = [2, 4, 8]
+        branch_components = [2,3,K]
 
         PARAMS = []
         for K in branch_components:
             # NEW: init per-branch K
-            cat_params, latent_params = initialize_gmm_params(
+            latent_params = initialize_gmm_params(
                 dataloader, n_components=K, latent_dim=latent_dim, device=device
             )
+            cat_params = init_categorical_uniform(K, device)
 
             prior_categorical = CategoricalDistribution(cat_params)
-            prior_latent = NormalDistribution(latent_params)
+            latent_params = initialize_student_prior_params_from_gmm(latent_params, device, df0=10)
+            prior_latent = Student(latent_params) #NormalDistribution(latent_params)
 
             PARAMS.append({
                 "input_dim": input_dim,
@@ -829,8 +867,9 @@ if __name__ == "__main__":
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    EPOCHS = 50
+    EPOCHS = 1
     BETA_KL = 0.5
+    REG_MARG = 10 # controls the "careful, use all components" message to the network
     WARMUP_BETA = int(0.2 * EPOCHS)
     PATIENCE = 5
     TOL = 5e-3
@@ -844,6 +883,7 @@ if __name__ == "__main__":
         optimizer,
         epochs=EPOCHS,
         beta_kl=BETA_KL,
+        reg_marg=REG_MARG,
         warmup=WARMUP_BETA,
         patience=PATIENCE,
         tol=TOL,
@@ -858,7 +898,7 @@ if __name__ == "__main__":
     model.to(device)
 
     print("Testing loaded model")
-    compute_ll(model, val_dataloader)
+    print(compute_ll(model, val_dataloader))
 
     plot_loss_components(
         parts["train"],
@@ -886,3 +926,12 @@ if __name__ == "__main__":
         title="Latent Space",
         save_path=f"./{model.__class__.__name__}_true_latent.pdf"
     )
+
+    radj = compute_radj_classic(
+                        model,
+                        val_dataloader,
+                        1,
+                        model.n_levels,
+                        debug=True,
+                    )
+    print("Radj", radj)
