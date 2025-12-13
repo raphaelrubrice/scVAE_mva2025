@@ -528,8 +528,9 @@ def compute_CV_radj(
             dset_radj = compute_radj_classic(model, test_loader, dataset_K, model_n_levels)
 
         # NEW: invalidate levels that the model cannot represent
+        
         dset_radj = _nanify_wrong_levels_per_model(dset_radj, dataset_K, model_n_levels)
-
+        
         for lvl in level_list:
             test_radj[lvl].extend(dset_radj.get(lvl, []))
 
@@ -549,8 +550,9 @@ def compute_CV_radj(
                 dset_radj = compute_radj_classic(model, loader, dataset_K_val, model_n_levels)
 
             # NEW: invalidate wrong levels (using the val loader's dataset_K_val)
+           
             dset_radj = _nanify_wrong_levels_per_model(dset_radj, dataset_K_val, model_n_levels)
-
+            
             # aggregate only over levels present in the test scheme
             for lvl in level_list:
                 if lvl in dset_radj:
