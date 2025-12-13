@@ -193,7 +193,7 @@ def compute_radj_pbmc(
     loader,
     dataset_K: int,
     model_n_levels: int,
-    debug: bool = False,
+    debug: bool = True,
 ):
     """
     PBMC loader: batch is dict with X and labels y1..y4 (present subset).
@@ -234,7 +234,10 @@ def compute_radj_pbmc(
 
             for d_lvl in range(1, dataset_K + 1):
                 y_key = f"y{d_lvl}"
-                y = batch.get(y_key, None)
+                try:
+                    y = batch.get(y_key, None)
+                except:
+                    continue
 
                 if b_idx == 0:
                     if y is None:
@@ -303,7 +306,7 @@ def compute_radj_classic(
     loader,
     dataset_K: int,
     model_n_levels: int,
-    debug: bool = False,
+    debug: bool = True,
 ):
     """
     Classic loader: batch is (X, y1, y2, ..., yK)
@@ -340,7 +343,10 @@ def compute_radj_classic(
                 )
 
             for d_lvl in range(1, dataset_K + 1):
-                y = batch[d_lvl]
+                try:
+                    y = batch[d_lvl]
+                except:
+                    continue
 
                 if b_idx == 0:
                     if y is None:
@@ -575,81 +581,208 @@ def compute_CV_ll(cv_models: list,
         return overall_ll, val_ll, test_ll
     return test_ll
 
-def initialize_gmm_params(loader, n_components, latent_dim, device):
+# Init helpers
+
+def make_toy_nb_mixture(
+    N: int = 5000,
+    n_genes: int = 5,
+    K: int = 3,
+    base_mu: float = 5.0,
+    fold_change: float = 4.0,
+    r: float = 10.0,
+    seed: int = 42,
+    device: str = "cpu",
+):
     """
-    Computes data-dependent initialization for priors using PCA + KMeans.
+    y ~ Uniform{0..K-1}
+    x_d ~ NB(total_count=r, probs=p_{y,d})
+    with p computed from mu and r: p = mu / (mu + r)
+    Returns X float32 and one-hot Y.
     """
-    print(f"Initializing priors with PCA + KMeans ({n_components} components)...")
-    
-    # 1. Collect all data (careful with memory, subsample if >100k cells)
+    g = torch.Generator(device=device)
+    g.manual_seed(seed)
+
+    y = torch.randint(0, K, (N,), generator=g, device=device)
+    Y = torch.nn.functional.one_hot(y, num_classes=K).unsqueeze(1)  # (N,1,K)
+
+    # cluster-specific mean patterns
+    mu = torch.full((K, n_genes), base_mu, device=device)
+    for k in range(K):
+        mu[k, k % n_genes] = base_mu * fold_change
+
+    mu_per_sample = mu[y]  # (N, n_genes)
+
+    # convert to probs for torch.distributions.NegativeBinomial
+    r_tensor = torch.full_like(mu_per_sample, float(r))
+    p = (mu_per_sample / (mu_per_sample + r_tensor)).clamp(1e-6, 1 - 1e-6)
+
+    nb = torch.distributions.NegativeBinomial(total_count=r_tensor, probs=p)
+    X = nb.sample().to(torch.float32)
+
+    return X, Y, y, mu
+
+def init_categorical_uniform(n_components: int, device, dtype=torch.float32):
+    """
+    Returns uniform categorical parameters.
+
+    Shape convention: (1, K) so K is last dim (PyTorch-style).
+    """
+    probs = torch.full((1, n_components), 1.0 / n_components, device=device, dtype=dtype)
+    return {"probs": probs}
+
+def initialize_gmm_params(
+    loader,
+    n_components: int,
+    latent_dim: int,
+    device,
+    max_cells: int | None = 20000,
+    eps: float = 1e-8,
+    do_zscore: bool = True,
+):
+    """
+    Data-dependent initialization for p(z|y):
+      - Normalize (library size) + log1p + optional z-score
+      - PCA to latent_dim
+      - KMeans in PCA space
+      - Return mu/std per component
+
+    Returns:
+      latent_params = {"mu": (K,D), "std": (K,D)}
+    """
+    print(f"Initializing latent priors with normalized PCA + KMeans ({n_components} components)...")
+
     all_x = []
     for batch in loader:
-        # Handle dict or tuple batches
         x = batch["X"][:, 0, :] if isinstance(batch, dict) else batch[0]
         all_x.append(x)
-    X_full = torch.cat(all_x, dim=0).cpu().numpy()
+    X = torch.cat(all_x, dim=0)  # (N,D)
 
-    # 2. PCA (Reduce noise)
-    # Reducing to latent_dim is aggressive but aligns the initialization perfectly
-    pca = PCA(n_components=latent_dim) 
+    if max_cells is not None and X.size(0) > max_cells:
+        idx = torch.randperm(X.size(0), device=X.device)[:max_cells]
+        X = X[idx]
+
+    # 1) library-size normalize per cell
+    lib = X.sum(dim=1, keepdim=True).clamp_min(eps)
+    Xn = X / lib * 1e4
+
+    # 2) log1p
+    Xn = torch.log1p(Xn)
+
+    # 3) z-score per feature
+    if do_zscore:
+        mu = Xn.mean(dim=0, keepdim=True)
+        sd = Xn.std(dim=0, keepdim=True).clamp_min(1e-6)
+        Xn = (Xn - mu) / sd
+
+    X_full = Xn.cpu().numpy()
+
+    # PCA + KMeans
+    pca = PCA(n_components=latent_dim, random_state=42)
     X_pca = pca.fit_transform(X_full)
 
-    # 3. K-Means
     kmeans = KMeans(n_clusters=n_components, n_init=10, random_state=42)
     y_pred = kmeans.fit_predict(X_pca)
-    
-    # 4. Compute Statistics per Cluster
-    cluster_means = []
-    cluster_stds = []
-    cluster_probs = []
-    
-    eps = 1e-6 # Stability
-    
+
+    # component stats in PCA-latent space
+    eps_std = 1e-6
+    cluster_means, cluster_stds = [], []
+
     for k in range(n_components):
-        # Select data for cluster k
         X_k = X_pca[y_pred == k]
-        
-        # Proportions (with smoothing)
         n_k = len(X_k)
-        prob = (n_k + 1) / (len(X_full) + n_components) # Add-1 smoothing
-        cluster_probs.append(prob)
-        
-        # Mean & Std in the PCA-Latent space
+
         if n_k > 1:
             mean_k = X_k.mean(axis=0)
-            std_k = X_k.std(axis=0) + eps # Avoid zero std
+            std_k = X_k.std(axis=0) + eps_std
         else:
-            # Fallback for empty clusters
-            mean_k = np.zeros(latent_dim)
-            std_k = np.ones(latent_dim)
-            
-        cluster_means.append(torch.tensor(mean_k))
-        cluster_stds.append(torch.tensor(std_k))
+            mean_k = np.zeros(latent_dim, dtype=np.float32)
+            std_k = np.ones(latent_dim, dtype=np.float32)
 
-    # Stack into tensors
-    # Shape: (1, n_components * latent_dim) or (n_components, latent_dim) 
-    
-    # Categorical Params
-    cat_params = {"probs": torch.tensor(cluster_probs, device=device).unsqueeze(1)}
-    
-    # Latent Params (Mean and Std)
-    mu_tensor = torch.stack(cluster_means).to(device) # (K, D)
-    std_tensor = torch.stack(cluster_stds).to(device) # (K, D)
-    
-    latent_params = {"mu": mu_tensor, "std": std_tensor}
-    
-    return cat_params, latent_params
+        cluster_means.append(torch.tensor(mean_k, dtype=torch.float32))
+        cluster_stds.append(torch.tensor(std_k, dtype=torch.float32))
 
-def make_figure(config):
-    # key = name of the model and posterior
-    # value = list of cross validated model paths to load
+    mu_tensor = torch.stack(cluster_means, dim=0).to(device)   # (K,D)
+    std_tensor = torch.stack(cluster_stds, dim=0).to(device)   # (K,D)
 
-    # dict of results used later to build a dataframe with columns:
-    # Model, Posterior latent, IWAE, Radj
-    # for each model 
-    # compute LL across the cv (mean and std)
-    # compute ARI (mean and std)
-    # add it to the dictionary of results
+    latent_params = {"mu": 1.25*mu_tensor, "std": 0.75*std_tensor} #scale to make them more deparate
+    return latent_params
 
-    # return the dataframe of results
-    pass
+def compute_loader_mean_var(loader, device, unbiased: bool = False):
+    """
+    Computes per-feature mean and variance over a loader.
+
+    Returns:
+      mu:  (1, D)
+      var: (1, D)
+    """
+    sum_x = None
+    sum_x2 = None
+    total = 0
+
+    for batch in loader:
+        try:
+            x = batch["X"][:, 0, :]
+        except Exception:
+            x = batch[0]
+
+        x = x.to(device)
+
+        if sum_x is None:
+            D = x.shape[1]
+            sum_x = torch.zeros(D, device=device, dtype=torch.float64)
+            sum_x2 = torch.zeros(D, device=device, dtype=torch.float64)
+
+        x64 = x.to(dtype=torch.float64)
+        sum_x += x64.sum(dim=0)
+        sum_x2 += (x64 * x64).sum(dim=0)
+        total += x64.size(0)
+
+    mu = (sum_x / total)  # (D,)
+    ex2 = (sum_x2 / total)
+    var = ex2 - mu * mu
+    var = var.clamp_min(0.0)
+
+    if unbiased and total > 1:
+        # unbiased sample variance: var_pop * n/(n-1)
+        var = var * (total / (total - 1))
+
+    return mu.reshape(1, -1), var.reshape(1, -1)
+
+def init_nb_params_mom(loader, device, eps: float = 1e-6,
+                       r_min: float = 1e-3, r_max: float = 1e3):
+    """
+    Method-of-moments initialization for PyTorch NB (logits, total_count=r).
+
+    r = mu^2 / (var - mu)
+    p = mu / (mu + r)
+    logits = log(p/(1-p))
+
+    Returns:
+      {"logits": (1,D), "r": (1,D)}
+    """
+    mu, var = compute_loader_mean_var(loader, device)  # (1,D), (1,D)
+
+    # Handle var <= mu (approximately Poisson or underdispersed):
+    # var - mu can be <= 0, which would imply r = +inf.
+    denom = (var - mu).clamp_min(eps)
+
+    r = (mu * mu) / denom
+    r = r.clamp(min=r_min, max=r_max)
+
+    # p = mu / (mu + r)
+    p = (mu / (mu + r)).clamp(min=eps, max=1.0 - eps)
+    logits = torch.log(p) - torch.log1p(-p)
+
+    # Keep float32 for consistency with your other initializers
+    return {"logits": logits.to(dtype=torch.float32),
+            "r": r.to(dtype=torch.float32)}
+
+def initialize_student_prior_params_from_gmm(latent_params, device, df0=10.0):
+    mu = latent_params["mu"]          # (K,D)
+    std = latent_params["std"]        # (K,D)
+
+    K, D = mu.shape
+    df = torch.full((K, 1), df0, device=device, dtype=mu.dtype)  # one df per component
+    scale = std.clamp_min(1e-3)
+
+    return {"df": df, "mu": mu, "scale": scale}
