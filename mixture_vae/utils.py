@@ -234,10 +234,7 @@ def compute_radj_pbmc(
 
             for d_lvl in range(1, dataset_K + 1):
                 y_key = f"y{d_lvl}"
-                try:
-                    y = batch.get(y_key, None)
-                except:
-                    continue
+                y = batch.get(y_key, None)
 
                 if b_idx == 0:
                     if y is None:
@@ -346,7 +343,7 @@ def compute_radj_classic(
                 try:
                     y = batch[d_lvl]
                 except:
-                    continue
+                    y = None
 
                 if b_idx == 0:
                     if y is None:
@@ -467,12 +464,50 @@ def compute_radj_classic(
 
 #     return test_radj
 
-def compute_CV_radj(cv_models: list,
-                    test_loader: DataLoader,
-                    cv_val_loaders: list | None = None):
+def _nanify_wrong_levels_per_model(
+    dset_radj: dict[int, list[float]],
+    dataset_K: int,
+    model_n_levels: int,
+) -> dict[int, list[float]]:
     """
-    Cross-validated ARI (Radj) per *dataset level* (1..K),
-    where dataset level i maps to model level (N-K+i) if K < N.
+    If dataset has N=dataset_K levels and model has K=model_n_levels <= N:
+      - when model_n_levels < dataset_K:
+          the last model_n_levels dataset levels are valid
+          the first (dataset_K - model_n_levels) dataset levels are invalid -> set to NaN
+      - when model_n_levels >= dataset_K: nothing to do (all dataset levels can be evaluated)
+
+    This operates on the already-produced per-dataset-level Radj lists.
+    """
+    if model_n_levels >= dataset_K:
+        return dset_radj
+
+    n_bad = dataset_K - model_n_levels  # number of leading dataset levels to invalidate
+    bad_lvls = set(range(1, n_bad + 1))
+
+    out: dict[int, list[float]] = {}
+    for lvl in range(1, dataset_K + 1):
+        aris = dset_radj.get(lvl, [])
+        if lvl in bad_lvls:
+            # preserve list length (one NaN per computed entry) to keep fold/sample counts aligned
+            out[lvl] = [np.nan] * len(aris)
+        else:
+            out[lvl] = aris
+    return out
+
+
+def compute_CV_radj(
+    cv_models: list,
+    test_loader: DataLoader,
+    cv_val_loaders: list | None = None,
+):
+    """
+    Cross-validated ARI (Radj) per *dataset level* (1..dataset_K).
+
+    Added logic:
+      - If a model has fewer hierarchical levels than the dataset labels (model_n_levels < dataset_K),
+        then the *first* (dataset_K - model_n_levels) dataset levels are invalid for that model and
+        are replaced with NaN in the aggregated outputs.
+      - The last model_n_levels dataset levels remain valid.
 
     PBMC loader: batch is dict with keys X and y1..y4.
     Classic loader: batch is tuple where batch[0]=X and batch[1:]=labels.
@@ -485,14 +520,18 @@ def compute_CV_radj(cv_models: list,
     test_radj = {lvl: [] for lvl in level_list}
 
     for model in cv_models:
-        model_n_levels = getattr(model, "n_levels", 1)
+        model_n_levels = int(getattr(model, "n_levels", 1))
+
         if is_pbmc:
             dset_radj = compute_radj_pbmc(model, test_loader, dataset_K, model_n_levels)
         else:
             dset_radj = compute_radj_classic(model, test_loader, dataset_K, model_n_levels)
 
-        for lvl, aris in dset_radj.items():
-            test_radj[lvl].extend(aris)
+        # NEW: invalidate levels that the model cannot represent
+        dset_radj = _nanify_wrong_levels_per_model(dset_radj, dataset_K, model_n_levels)
+
+        for lvl in level_list:
+            test_radj[lvl].extend(dset_radj.get(lvl, []))
 
     if cv_val_loaders is not None:
         val_radj = {lvl: [] for lvl in level_list}
@@ -502,17 +541,20 @@ def compute_CV_radj(cv_models: list,
             is_pbmc_val = _infer_pbmc_loader(first_val)
             dataset_K_val = _count_dataset_levels(first_val)
 
-            # We assume val/test have same label scheme; if not, handle gracefully by intersection.
-            model_n_levels = getattr(model, "n_levels", 1)
+            model_n_levels = int(getattr(model, "n_levels", 1))
 
             if is_pbmc_val:
                 dset_radj = compute_radj_pbmc(model, loader, dataset_K_val, model_n_levels)
             else:
                 dset_radj = compute_radj_classic(model, loader, dataset_K_val, model_n_levels)
 
-            for lvl, aris in dset_radj.items():
-                if lvl in val_radj:
-                    val_radj[lvl].extend(aris)
+            # NEW: invalidate wrong levels (using the val loader's dataset_K_val)
+            dset_radj = _nanify_wrong_levels_per_model(dset_radj, dataset_K_val, model_n_levels)
+
+            # aggregate only over levels present in the test scheme
+            for lvl in level_list:
+                if lvl in dset_radj:
+                    val_radj[lvl].extend(dset_radj[lvl])
 
         val_radj_stats = {}
         overall_radj = {}
@@ -520,16 +562,24 @@ def compute_CV_radj(cv_models: list,
             val_arr = np.asarray(val_radj[lvl], dtype=float)
             test_arr = np.asarray(test_radj[lvl], dtype=float)
 
-            # avoid nan if empty
-            if val_arr.size == 0 and test_arr.size == 0:
+            # If everything is NaN or empty, keep NaN stats
+            if (val_arr.size == 0 or np.isnan(val_arr).all()) and (test_arr.size == 0 or np.isnan(test_arr).all()):
                 val_radj_stats[lvl] = (np.nan, np.nan)
                 overall_radj[lvl] = (np.nan, np.nan)
                 continue
 
-            all_arr = np.concatenate([val_arr, test_arr]) if val_arr.size else test_arr
-            val_radj_stats[lvl] = (val_arr.mean() if val_arr.size else np.nan,
-                                   val_arr.std() if val_arr.size else np.nan)
-            overall_radj[lvl] = (all_arr.mean(), all_arr.std())
+            # Use nan-aware stats because we now inject NaNs intentionally
+            val_radj_stats[lvl] = (
+                np.nanmean(val_arr) if val_arr.size else np.nan,
+                np.nanstd(val_arr) if val_arr.size else np.nan,
+            )
+
+            if val_arr.size:
+                all_arr = np.concatenate([val_arr, test_arr]) if test_arr.size else val_arr
+            else:
+                all_arr = test_arr
+
+            overall_radj[lvl] = (np.nanmean(all_arr), np.nanstd(all_arr))
 
         return overall_radj, val_radj_stats, test_radj
 

@@ -418,7 +418,7 @@ def training_mvae(
             print(
                 f"epoch {epoch}: "
                 f"val = {losses['val'][-1]:.3f} ({format_loss(val_epoch_parts, beta_kl, reg_marg)}) | "
-                f"train = {losses['train'][-1]:.3f} ({format_loss(val_epoch_parts, beta_kl, reg_marg)})"
+                f"train = {losses['train'][-1]:.3f} ({format_loss(epoch_parts, beta_kl, reg_marg)})"
                 f" | lr={current_lr:.3e} "
             )
     
