@@ -15,7 +15,7 @@ if path_to_repo not in sys.path:
 from mixture_vae.mvae import MixtureVAE, ind_MoMVAE, MoMixVAE
 from mixture_vae.distributions import NormalDistribution, UniformDistribution, NegativeBinomial, Poisson, Student, CategoricalDistribution
 from mixture_vae.training import training_mvae, training_momixvae
-from mixture_vae.utils import compute_CV_ll, compute_CV_radj, initialize_gmm_params
+from mixture_vae.utils import *
 from mixture_vae.viz import plot_loss_components, plot_latent
 
 MODELS = {
@@ -49,25 +49,27 @@ def build_distribution(dist_name: str, params: dict, device='cpu'):
             
     return DISTRIBUTIONS[dist_name](formatted_params)
 
-def compute_loader_mean(loader, device):
-    """Iterates over the loader to compute the mean of the features (dim 0)."""
-    sum_x = None
-    total_samples = 0
+# def compute_loader_mean(loader, device):
+#     """Iterates over the loader to compute the mean of the features (dim 0)."""
+#     sum_x = None
+#     total_samples = 0
     
-    for batch in loader:
-        try:
-            x = batch["X"][:, 0, :]
-        except Exception:
-            x = batch[0]
+#     for batch in loader:
+#         try:
+#             x = batch["X"][:, 0, :]
+#         except Exception:
+#             x = batch[0]
         
-        x = x.to(device)
-        if sum_x is None:
-            sum_x = torch.zeros(x.shape[1], device=device)
+#         x = x.to(device)
+#         if sum_x is None:
+#             sum_x = torch.zeros(x.shape[1], device=device)
             
-        sum_x += x.sum(dim=0)
-        total_samples += x.size(0)
+#         sum_x += x.sum(dim=0)
+#         total_samples += x.size(0)
         
-    return (sum_x / total_samples).reshape(1, -1)
+#     return (sum_x / total_samples).reshape(1, -1)
+
+
 
 def get_prior_parameters(dist_name, dim, device, loader=None):
     """
@@ -83,12 +85,11 @@ def get_prior_parameters(dist_name, dim, device, loader=None):
         params["df"] = torch.ones((1, dim), device=device) * 10.0 
         params["mu"] = torch.zeros((1, dim), device=device)
         params["scale"] = torch.ones((1, dim), device=device)
-        
+    
     elif dist_name == "NegativeBinomial":
         if loader is None:
             raise ValueError("Loader required to initialize NegativeBinomial")
-        params["p"] = 0.5 * torch.ones((1, dim), device=device)
-        params["r"] = compute_loader_mean(loader, device)
+        params = init_nb_params_mom(loader, device)
         
     elif dist_name == "Poisson":
         params["rate"] = torch.ones((1, dim), device=device)
@@ -174,9 +175,10 @@ def instantiate_model(config, train_loader, device):
           prior_lat: distribution instance for p(z|y) with (K,D) parameters
         """
         # Data-dependent init in latent space
-        cat_params, latent_params = initialize_gmm_params(
+        latent_params = initialize_gmm_params(
             train_loader, n_components=K, latent_dim=latent_dim, device=device
         )
+        cat_params = init_categorical_uniform(K, device)
 
         # Categorical prior
         if cat_dist_name == "Uniform":
@@ -185,6 +187,8 @@ def instantiate_model(config, train_loader, device):
             # expects something like {"probs": (K,)}
             prior_cat = build_distribution(cat_dist_name, cat_params, device)
 
+        if p_lat_name == "Student":
+            latent_params = initialize_student_prior_params_from_gmm(latent_params, device, df0=10)
         # Latent prior (component-specific): expects {"mu": (K,D), "std": (K,D)} for Normal
         prior_lat = build_distribution(p_lat_name, latent_params, device)
 
@@ -317,6 +321,7 @@ def run_training(config: dict,
     # 3. Setup Training Parameters
     epochs = config.get("epochs", 50)
     beta_kl = config.get("beta_kl", 1.0)
+    reg_marg = config.get("reg_marg", 10)
     warmup = config.get("warmup", None)
     patience = config.get("patience", max(5,int(0.1*epochs)))
     tol = config.get("tol", 1e-3)
@@ -330,7 +335,7 @@ def run_training(config: dict,
         # model_type=0 corresponds to MixtureVAE in training_mvae
         model, losses, parts, clusters, betas = training_mvae(
             train_loader, val_loader, model, optimizer,
-            epochs=epochs, beta_kl=beta_kl, warmup=warmup, 
+            epochs=epochs, beta_kl=beta_kl, reg_marg=reg_marg, warmup=warmup, 
             patience=patience, tol=tol, 
             model_type=0, # 0 for MixtureVAE
             track_clusters=track_clusters, save_path=save_path,
@@ -341,7 +346,7 @@ def run_training(config: dict,
         # model_type=1 corresponds to ind_MoMVAE in training_mvae
         model, losses, parts, clusters, betas = training_mvae(
             train_loader, val_loader, model, optimizer,
-            epochs=epochs, beta_kl=beta_kl, warmup=warmup, 
+            epochs=epochs, beta_kl=beta_kl, reg_marg=reg_marg, warmup=warmup, 
             patience=patience, tol=tol, 
             model_type=1, # 1 for ind_MoMVAE
             track_clusters=track_clusters, save_path=save_path,
@@ -351,7 +356,7 @@ def run_training(config: dict,
     elif model_type_str == "MoMixVAE":
         model, losses, parts, clusters, betas = training_momixvae(
             train_loader, val_loader, model, optimizer,
-            epochs=epochs, beta_kl=beta_kl, warmup=warmup, 
+            epochs=epochs, beta_kl=beta_kl, reg_marg=reg_marg, warmup=warmup, 
             patience=patience, tol=tol, 
             track_clusters=track_clusters, save_path=save_path,
             **kwargs
@@ -506,10 +511,10 @@ if __name__ == "__main__":
     file_parent = "/".join(os.path.abspath(__file__).split("/")[:-1])
     os.chdir(file_parent)
              
-    X = torch.randint(0, 50, (5000, 5), dtype=torch.float)
-    Y = nn.functional.one_hot(torch.randint(0, 3, (5000,1), dtype=torch.long))
-    X_val = torch.randint(0, 50, (500, 5), dtype=torch.float)
-    Y_val = nn.functional.one_hot(torch.randint(0, 3, (500,1), dtype=torch.long))
+    n_genes = 5
+    K = 4
+    X, Y, _, _ = make_toy_nb_mixture(N=500, n_genes=n_genes, K=K, seed=0, r=10.0)
+    X_val, Y_val, _, _ = make_toy_nb_mixture(N=50, n_genes=n_genes, K=K, seed=1, r=10.0)
     
     train_ds = torch.utils.data.TensorDataset(X, Y)
     val_ds = torch.utils.data.TensorDataset(X_val, Y_val)
@@ -522,23 +527,31 @@ if __name__ == "__main__":
     # train_loader = DataLoader(train_ds, batch_size=64, shuffle=False)
     val_loader = DataLoader(val_ds, batch_size=64, shuffle=False)
 
+    INPUT_DIM = 5
+    HIDDEN = 32
+    LATENT = 2
+    EPOCHS = 2
+    WARMUP = 2
+    latent_dist = "Student"
+
     # --- Experiment 1: MixtureVAE Config ---
     config_mvae = {
         "run_tag": "Test_MixtureVAE",
         "model_type": "MixtureVAE",
-        "prior_latent_dist": "Normal",
+        "prior_latent_dist": latent_dist,
         "prior_input_dist": "NegativeBinomial",
-        "posterior_latent_dist": "Normal",
+        "posterior_latent_dist": latent_dist,
         "prior_categorical_dist": "Categorical",
-        "input_dim": 5,
-        "hidden_dim": 16,
-        "latent_dim": 2,
-        "n_components": 3,
-        "n_layers": 1,
+        "input_dim": INPUT_DIM,
+        "hidden_dim": HIDDEN,
+        "latent_dim": LATENT,
+        "n_components": K,
+        "n_layers": 2,
         "lr": 1e-3,
-        "epochs": 5,
+        "epochs": EPOCHS,
         "beta_kl": 0.5,
-        "warmup": 10,
+        "reg_marg": 10,
+        "warmup": WARMUP,
         "save_path": "./mixture_vae.ckpt"
     }
 
@@ -546,19 +559,20 @@ if __name__ == "__main__":
     config_momix = {
         "run_tag": "Test_MoMixVAE",
         "model_type": "MoMixVAE",
-        "prior_latent_dist": "Normal",
+        "prior_latent_dist": latent_dist,
         "prior_input_dist": "NegativeBinomial",
-        "posterior_latent_dist": "Normal",
+        "posterior_latent_dist": latent_dist,
         "prior_categorical_dist": "Categorical",
-        "input_dim": 5,
-        "hidden_dim": 16,
-        "latent_dim": 2,
-        "hierarchy_components": [2, 3],
+        "input_dim": INPUT_DIM,
+        "hidden_dim": HIDDEN,
+        "latent_dim": LATENT,
+        "hierarchy_components": [2, 3, K],
         "n_layers": 2,
         "lr": 1e-3,
-        "epochs": 5,
+        "epochs": EPOCHS,
         "beta_kl": 0.5,
-        "warmup": None, # No warmup
+        "reg_marg": 10,
+        "warmup": WARMUP, # No warmup
         "save_path": "./momix_vae.ckpt"
     }
 
@@ -566,26 +580,28 @@ if __name__ == "__main__":
     config_indmom = {
         "run_tag": "Test_ind_MoMVAE",
         "model_type": "ind_MoMVAE",
-        "prior_latent_dist": "Normal",
+        "prior_latent_dist": latent_dist,
         "prior_input_dist": "NegativeBinomial",
-        "posterior_latent_dist": "Normal",
+        "posterior_latent_dist": latent_dist,
         "prior_categorical_dist": "Categorical",
-        "input_dim": 5,
-        "hidden_dim": 16,
-        "latent_dim": 2,
-        "hierarchy_components": [2, 3],
+        "input_dim": INPUT_DIM,
+        "hidden_dim": HIDDEN,
+        "latent_dim": LATENT,
+        "hierarchy_components": [2, 3, K],
         "n_layers": 2,
         "lr": 1e-3,
-        "epochs": 5,
+        "epochs": EPOCHS,
         "beta_kl": 0.5,
-        "warmup": 10, # No warmup
-        "save_path": "./momix_vae.ckpt"
+        "reg_marg": 10,
+        "warmup": WARMUP, # No warmup
+        "save_path": "./ind_mom_vae.ckpt"
     }
 
     # CV
-    cv_momix = run_cv(config_momix, folds, val_loader, show_loss_every=1)
-    # cv_mvae = run_cv(config_mvae, folds, val_loader, show_loss_every=1)
-    # cv_indmom = run_cv(config_indmom, folds, val_loader, show_loss_every=1)
+    latent = False
+    cv_momix = run_cv(config_momix, folds, val_loader, plot_latent_space=latent, show_loss_every=1)
+    cv_mvae = run_cv(config_mvae, folds, val_loader, plot_latent_space=latent, show_loss_every=1)
+    cv_indmom = run_cv(config_indmom, folds, val_loader, plot_latent_space=latent, show_loss_every=1)
 
     # # --- Run ---
     # results_mvae = run_training(config_mvae, train_loader, val_loader)

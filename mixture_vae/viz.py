@@ -130,6 +130,7 @@ def plot_latent(model,
             except:
                 x = batch[0]
                 y_true = batch[1] if len(batch) > 1 else None
+                y_true = torch.argmax(y_true.squeeze(), dim=1)
 
             x = x.to(device)
 
@@ -193,13 +194,13 @@ def plot_latent(model,
         
         # UMAP
         print("Running UMAP...")
-        reducer = umap.UMAP(random_state=42)
+        reducer = umap.UMAP()
         latent_umap = reducer.fit_transform(LATENT)
         projections["UMAP"] = latent_umap
         
         # t-SNE
         print("Running t-SNE...")
-        tsne = TSNE(n_components=2, random_state=42, init='pca', learning_rate='auto')
+        tsne = TSNE(n_components=2, n_jobs=-1, init='pca', learning_rate='auto')
         latent_tsne = tsne.fit_transform(LATENT)
         projections["t-SNE"] = latent_tsne
     else:
@@ -221,7 +222,7 @@ def plot_latent(model,
         # Determine axes to plot
         x_axis = data[:, 0].flatten()
         y_axis = data[:, 1].flatten() if data.shape[1] > 1 else np.zeros_like(x_axis) # Handle 1D
-      
+        
         sns.scatterplot(
             x=x_axis, 
             y=y_axis, 
