@@ -284,11 +284,10 @@ class NormalDistribution(Distribution):
         self.n_params = 2  # mu, sigma
 
     def constraints(self, params):
-        constrained = params.clone()
-        # softplus for strict positivity + epsilon
-        # (to avoid killing the log-likelihood with 0 variance)
-        constrained[:, 1] = F.softplus(params[:, 1]) + 1e-6
-        return constrained
+        mu, std = split_or_validate_features(params, self.param_dims)  # (N,D), (N,D)
+        std = F.softplus(std) + 1e-6
+        return torch.cat([mu, std], dim=1)
+
 
     def sample(self, latent_params, batch_size):
         mu, std = split_or_validate_features(latent_params, self.param_dims)
@@ -368,7 +367,6 @@ class NegativeBinomial(Distribution):
         self.n_params = 2 # logits, r
 
     def constraints(self, params):
-        params = params.double()
         constrained = params.clone()
         # ensure positivity on r
         r_dims = self.param_dims[1]
@@ -393,7 +391,6 @@ class NegativeBinomial(Distribution):
         P(k) = Gamma(k + r) / (Gamma(k + 1) Gamma(r)) * (1 - p)^r * p^k
         """
         logits, r = split_or_validate_features(params, self.param_dims)
-        
         # log_prob = lgamma(x + r) - lgamma(r) - lgamma(x + 1)
         #            + r * log(1 - p) + x * log(p)
         # log(p)     = log_sigmoid(logits)
@@ -423,7 +420,6 @@ class Poisson(Distribution):
         self.n_params = 1  # lambda
 
     def constraints(self, params):
-        params = params.double()
         constrained = params.clone()
         constrained[:, 0] = F.softplus(params[:, 0]) + 1e-6
         return constrained
@@ -460,9 +456,10 @@ class Student(Distribution):
         super().__init__(ref_parameters)
         self.parametric_kl = False
         self.n_params = 3 # df, mu, scale
+        # IMPORTANT: samples live in mu-space
+        self.sample_dim = self.param_dims[1]
 
     def constraints(self, params):
-        params = params.double()
         constrained = params.clone()
         
         dim_df = self.param_dims[0]
@@ -477,33 +474,36 @@ class Student(Distribution):
         return constrained
 
     def sample(self, latent_params, batch_size):
-        """
-        Optimized reparameterized sampling:
-        X = mu + scale * (Z / sqrt(V/df))
-        Z ~ N(0,1), V ~ Chi2(df)
-        """
         df, mu, scale = split_or_validate_features(latent_params, self.param_dims)
-        
-        if check_nonbatch(df):
-            shape = (batch_size, self.sample_dim)
+
+        # Determine output shape from params (supports (B,D) and (B,N,D))
+        if check_nonbatch(mu):
+            # prior-like params: (1, D) -> sample (batch_size, D)
+            mu = mu.expand(batch_size, -1)
+            df = df.expand(batch_size, -1)
+            scale = scale.expand(batch_size, -1)
         else:
-            shape = tuple(list(latent_params.size())[:-1] + [self.sample_dim])
-            
-        device = df.device
-        dtype = df.dtype
-        
-        # Z ~ Normal(0, 1)
-        z = torch.randn(shape, device=device, dtype=dtype)
-        
-        
-        gamma_dist = D.Gamma(concentration=df / 2.0, rate=0.5)
-        v = gamma_dist.rsample(sample_shape=shape if df.shape[0]==1 else ())
-        # Note: if df has batch dim, rsample handles it.
-        
-        # If df was broadcasted, v will match.
-        
-        x = mu + scale * (z * torch.rsqrt(v / df))
-        return x
+            # posterior / IWAE: use the param-driven shape
+            if mu.size(0) != batch_size:
+                print(
+                    f"WARNING: Mismatch between param batch dim ({mu.size(0)}) and batch_size ({batch_size})!"
+                )
+                print(
+                    f"Ignoring batch_size to prefer the first dimension of params dim: {mu.size(0)}"
+                )
+
+        # z ~ N(0, I) with same shape as mu (includes IWAE N dimension if present)
+        z = torch.randn_like(mu)
+
+        # v ~ Chi2(df): if g ~ Gamma(df/2, rate=1), then v = 2g
+        gamma = torch.distributions.Gamma(
+            concentration=df / 2.0,
+            rate=torch.ones_like(df),
+        ).rsample()
+        v = 2.0 * gamma
+
+        # sample: mu + scale * z / sqrt(v/df)
+        return mu + scale * (z * torch.rsqrt(v / df))
 
     def log_likelihood(self, x, params):
         """
@@ -528,9 +528,8 @@ class Student(Distribution):
                     - torch.log(scale))
         
         log_p = log_norm - 0.5 * (df + 1) * log_term
-        
-        if log_p.dim() > 1:
-            return log_p.sum(dim=1)
+        if log_p.ndim > 1:
+            log_p = log_p.sum(dim=1)
         return log_p
 
     def kl_divergence(self, input_params, target_params):
