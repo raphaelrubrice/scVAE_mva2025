@@ -328,7 +328,6 @@ def plot_latent_comparison(
             else:
                 enc_out = model.encode(x, at_level=level-1) # o-indexed in models
                 latent = enc_out[1]
-                print(enc_out[2])
                 model_labels = torch.argmax(enc_out[2], dim=1)
 
             all_latent.append(latent.cpu().numpy())
