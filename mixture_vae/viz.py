@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import seaborn as sns
+sns.set_theme("paper")
 import numpy as np
 import os
 import torch
@@ -114,7 +115,7 @@ def plot_latent(model,
       level = label_key if label_key is not None else level
 
     if level == -1:
-        level = model.n_levels - 1
+        level = model.n_levels
 
     all_latent = []
     all_labels = []
@@ -129,8 +130,14 @@ def plot_latent(model,
                 y_true = torch.argmax(y_true.squeeze(), dim=1)
             except:
                 x = batch[0]
-                y_true = batch[1] if len(batch) > 1 else None
-                y_true = torch.argmax(y_true.squeeze(), dim=1)
+                if len(batch) > 1:
+                    if level < len(batch):
+                        y_true = batch[level]
+                    else:
+                        y_true = batch[1]
+                    y_true = torch.argmax(y_true.squeeze(), dim=1)
+                else:
+                    y_true = None
 
             x = x.to(device)
 
@@ -255,3 +262,165 @@ def plot_latent(model,
         plt.close()
     else:
         plt.show()
+
+def plot_latent_comparison(
+    model,
+    loader,
+    level=-1,
+    label_key=4,
+    title="Latent Space Comparison",
+    save_path=None,
+):
+    """
+    Plot latent space with TRUE vs MODEL-PREDICTED labels
+    in a single figure (2x2 layout).
+
+    Row 1: True labels
+    Row 2: Model labels
+    Columns: Latent / UMAP | t-SNE (if applicable)
+    """
+    sns.set_theme("paper")
+    device = next(model.parameters()).device
+    model.eval()
+
+    # MixtureVAE logic
+    if isinstance(model, MixtureVAE) and level != -1:
+        print(
+            "Warning: MixtureVAE does not support level != -1. Using standard encoding."
+        )
+
+    if isinstance(model, MixtureVAE):
+        level = label_key if label_key is not None else level
+
+    if level == -1:
+        level = model.n_levels
+
+    all_latent = []
+    all_true_labels = []
+    all_model_labels = []
+
+    print("Extracting latent representations...")
+    with torch.no_grad():
+        for batch in loader:
+            try:
+                x = batch["X"][:, 0, :]
+                y_true = batch[f"y{level}"] if len(batch) > 1 else None
+                y_true = torch.argmax(y_true.squeeze(), dim=1)
+            except Exception:
+                x = batch[0]
+                if len(batch) > 1:
+                    if level < len(batch):
+                        y_true = batch[level]
+                    else:
+                        y_true = batch[1]
+                        level = model.n_levels
+                    y_true = torch.argmax(y_true.squeeze(), dim=1)
+                else:
+                    y_true = None
+
+            x = x.to(device)
+
+            # --- Encode ---
+            if isinstance(model, MixtureVAE):
+                enc_out = model.encode(x)
+                latent = enc_out[1]
+                model_labels = torch.argmax(enc_out[2], dim=1)
+            else:
+                enc_out = model.encode(x, at_level=level-1) # o-indexed in models
+                latent = enc_out[1]
+                print(enc_out[2])
+                model_labels = torch.argmax(enc_out[2], dim=1)
+
+            all_latent.append(latent.cpu().numpy())
+            all_model_labels.append(model_labels.cpu().numpy())
+
+            if y_true is None:
+                raise ValueError("True labels required for comparison plot.")
+            all_true_labels.append(y_true.cpu().numpy())
+
+    LATENT = np.concatenate(all_latent, axis=0)
+    true_labels = np.concatenate(all_true_labels).flatten()
+    model_labels = np.concatenate(all_model_labels).flatten()
+
+    latent_dim = LATENT.shape[1]
+
+    # --- Projections ---
+    projections = {}
+
+    if latent_dim > 2:
+        print("Latent dim > 2 → computing UMAP and t-SNE")
+
+        reducer = umap.UMAP()
+        projections["UMAP"] = reducer.fit_transform(LATENT)
+
+        tsne = TSNE(
+            n_components=2, n_jobs=-1, init="pca", learning_rate="auto"
+        )
+        projections["t-SNE"] = tsne.fit_transform(LATENT)
+    else:
+        projections["Latent"] = LATENT
+
+    # --- Plotting ---
+    n_cols = len(projections)
+    fig, axes = plt.subplots(
+        2, n_cols, figsize=(6 * n_cols, 10), sharex="col", sharey="col"
+    )
+
+    if n_cols == 1:
+        axes = np.expand_dims(axes, axis=1)
+
+    unique_labels = np.unique(
+        np.concatenate([true_labels, model_labels])
+    )
+    palette = sns.color_palette("tab10", len(unique_labels))
+
+    for col_idx, (proj_name, data) in enumerate(projections.items()):
+        x_axis = data[:, 0]
+        y_axis = data[:, 1] if data.shape[1] > 1 else np.zeros_like(x_axis)
+
+        # --- TRUE LABELS ---
+        sns.scatterplot(
+            x=x_axis,
+            y=y_axis,
+            hue=true_labels,
+            palette=palette,
+            s=40,
+            alpha=0.7,
+            ax=axes[0, col_idx],
+            legend="full",
+        )
+        axes[0, col_idx].set_title(f"TRUE labels – {proj_name}")
+
+        # --- MODEL LABELS ---
+        sns.scatterplot(
+            x=x_axis,
+            y=y_axis,
+            hue=model_labels,
+            palette=palette,
+            s=40,
+            alpha=0.7,
+            ax=axes[1, col_idx],
+            legend="full",
+        )
+        axes[1, col_idx].set_title(f"MODEL labels – {proj_name}")
+
+        axes[0, col_idx].set_xlabel("")
+        axes[1, col_idx].set_xlabel(f"{proj_name} 1")
+
+        axes[0, col_idx].set_ylabel(f"{proj_name} 2")
+        axes[1, col_idx].set_ylabel(f"{proj_name} 2")
+
+    fig.suptitle(title, fontsize=16)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+    if save_path:
+        os.makedirs(
+            os.path.dirname(save_path) if os.path.dirname(save_path) else ".",
+            exist_ok=True,
+        )
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.close()
+        print(f"Plot saved to {save_path}")
+    else:
+        plt.show()
+

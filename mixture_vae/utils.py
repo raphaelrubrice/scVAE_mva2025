@@ -633,6 +633,46 @@ def compute_CV_ll(cv_models: list,
         return overall_ll, val_ll, test_ll
     return test_ll
 
+def retrieve_label_levels(dataloader):
+    """
+    Inspect the first batch of a dataloader and retrieve label levels.
+
+    Rules:
+    - If batch is a dict:
+        * All keys containing 'y' are considered labels (e.g. y1, y2, y3)
+        * Levels are extracted from the integer suffix
+    - If batch is not a dict:
+        * If batch has length > 1, indices >= 1 are considered labels
+        * Levels are inferred as [1, 2, ..., N]
+
+    Returns
+    -------
+    levels : list[int]
+        Sorted list of label levels.
+    """
+    batch = next(iter(dataloader))
+
+    # Case 1: dict-based batch
+    if isinstance(batch, dict):
+        levels = []
+        for key in batch.keys():
+            if "y" in key:
+                # extract trailing integer (y1, y2, ...)
+                suffix = key.lstrip("y")
+                if suffix.isdigit():
+                    levels.append(int(suffix))
+        return sorted(levels)
+
+    # Case 2: tuple / list batch
+    if isinstance(batch, (tuple, list)):
+        if len(batch) <= 1:
+            return []
+        # indices >= 1 are labels → levels 1..N
+        return list(range(1, len(batch)))
+
+    # Otherwise: no labels detected
+    return []
+
 # Init helpers
 
 def make_toy_nb_mixture(
