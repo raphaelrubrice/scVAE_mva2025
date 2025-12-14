@@ -118,3 +118,44 @@ def load_model(path: str, map_location=None):
     model.to(map_location)
 
     return model
+
+def save_colab():
+    import os
+    import shutil
+    # Define source and destination directories
+    source_dir = "."
+    dest_base_dir = "/content/drive/MyDrive/scVAE"
+
+    # Ensure destination base directory exists
+    os.makedirs(dest_base_dir, exist_ok=True)
+    print(f"Destination directory '{dest_base_dir}' ensured.")
+
+    def has_models_and_plots(dir_path: str) -> bool:
+        """Check whether dir_path contains both 'Models' and 'Plots' subdirectories."""
+        return (
+            os.path.isdir(os.path.join(dir_path, "Models")) and
+            os.path.isdir(os.path.join(dir_path, "Plots"))
+        )
+
+    # Iterate through top-level items in the repo
+    for item in os.listdir(source_dir):
+        item_path = os.path.join(source_dir, item)
+
+        if not os.path.isdir(item_path):
+            continue
+
+        if has_models_and_plots(item_path):
+            dest_path = os.path.join(dest_base_dir, item)
+            print(f"Copying '{item_path}' -> '{dest_path}'")
+
+            try:
+                shutil.copytree(
+                    item_path,
+                    dest_path,
+                    dirs_exist_ok=True
+                )
+                print(f"Successfully copied '{item}'.")
+            except Exception as e:
+                print(f"Error copying '{item}': {e}")
+
+    print("Backup process complete.")

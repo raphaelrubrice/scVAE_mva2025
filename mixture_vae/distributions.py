@@ -455,22 +455,27 @@ class Student(Distribution):
     def __init__(self, ref_parameters):
         super().__init__(ref_parameters)
         self.parametric_kl = False
-        self.n_params = 3 # df, mu, scale
+        self.n_params = 3  # df, mu, scale
         # IMPORTANT: samples live in mu-space
         self.sample_dim = self.param_dims[1]
 
     def constraints(self, params):
         constrained = params.clone()
-        
+
         dim_df = self.param_dims[0]
         dim_mu = self.param_dims[1]
-        
-        # df > 0
-        constrained[:, :dim_df] = (F.softplus(params[:, :dim_df]) + 1e-6).clamp_min(1e-3).clamp_max(1e3)
+
+        # df > 0 (stabilized: keep df away from ~0 to avoid explosive samples)
+        constrained[:, :dim_df] = (
+            F.softplus(params[:, :dim_df]) + 1e-6
+        ).clamp_min(2.0).clamp_max(1e3)
+
         # scale > 0
         start_scale = dim_df + dim_mu
-        constrained[:, start_scale:] = (F.softplus(params[:, start_scale:]) + 1e-6).clamp_min(1e-6).clamp_max(1e3)
-        
+        constrained[:, start_scale:] = (
+            F.softplus(params[:, start_scale:]) + 1e-6
+        ).clamp_min(1e-6).clamp_max(1e3)
+
         return constrained
 
     def sample(self, latent_params, batch_size):
@@ -503,7 +508,9 @@ class Student(Distribution):
         v = 2.0 * gamma
 
         # sample: mu + scale * z / sqrt(v/df)
-        return mu + scale * (z * torch.rsqrt(v / df))
+        eps = 1e-8
+        den = (v / df).clamp_min(eps)
+        return mu + scale * (z * torch.rsqrt(den))
 
     def log_likelihood(self, x, params):
         """
@@ -512,21 +519,23 @@ class Student(Distribution):
                    - (v+1)/2 * log(1 + (1/v)*((x-mu)/scale)^2)
         """
         df, mu, scale = split_or_validate_features(params, self.param_dims)
-        
+
         # Constants
         pi = torch.tensor(np.pi, device=x.device, dtype=x.dtype)
-        
+
         # Mahalanobis distance squared
         z = (x - mu) / scale
-        log_term = torch.log1p( (z**2) / df )
-        
+        log_term = torch.log1p((z**2) / df)
+
         # Log Norm
         # lgamma returns log(Gamma(x))
-        log_norm = (torch.lgamma((df + 1) / 2) 
-                    - torch.lgamma(df / 2) 
-                    - 0.5 * torch.log(df * pi) 
-                    - torch.log(scale))
-        
+        log_norm = (
+            torch.lgamma((df + 1) / 2)
+            - torch.lgamma(df / 2)
+            - 0.5 * torch.log(df * pi)
+            - torch.log(scale)
+        )
+
         log_p = log_norm - 0.5 * (df + 1) * log_term
         if log_p.ndim > 1:
             log_p = log_p.sum(dim=1)
