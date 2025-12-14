@@ -117,6 +117,8 @@ def _build_default_cosine_scheduler(optimizer: torch.optim.Optimizer, epochs: in
     sched = SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs])
     return sched, warmup_epochs
 
+def step_marginal_reg(current_reg, current_T, max_T, min_reg):
+    return min_reg + (current_reg - min_reg) * (1 + math.cos((current_T + 1)*math.pi / max_T)) / (1 + math.cos(current_T*math.pi / max_T))
 
 def training_mvae(
     dataloader: torch.utils.data.DataLoader,
@@ -195,6 +197,11 @@ def training_mvae(
     elif scheduler == False:
         scheduler = None
 
+    max_T = len(dataloader) * epochs
+    start_reduce_reg_marg = int(0.5 * max_T) # keep constant for the first 50% steps
+    min_reg = reg_marg / 10.0
+    batch_idx = 0
+
     for epoch in tqdm(range(1, epochs + 1), desc="TRAINING"):
         beta_kl = all_betas[epoch - 1]
 
@@ -206,7 +213,7 @@ def training_mvae(
         # Initialize lists to store detached tensors on GPU
         epoch_parts = {key:[] for key in all_parts["train"].keys()}
         epoch_clusters = []
-
+        
         for batch in tqdm_func(dataloader, desc=f"Epoch {epoch} (train)", total=len(dataloader)):
             try:
                 x = batch["X"][:, 0, :]
@@ -257,6 +264,9 @@ def training_mvae(
 
             # keep clusters on GPU during accumulation; move to CPU later
             epoch_clusters.append(batch_clusters)
+            if batch_idx >= start_reduce_reg_marg:
+                reg_marg = step_marginal_reg(reg_marg, batch_idx, max_T, min_reg)
+            batch_idx += 1
 
         # [PATCH APPLIED]
         # Process accumulations once per epoch (Sync Point)
@@ -506,6 +516,11 @@ def training_momixvae(
     elif scheduler == False:
         scheduler = None
 
+    max_T = len(dataloader) * epochs
+    start_reduce_reg_marg = int(0.5 * max_T) # keep constant for the first 10% steps
+    min_reg = reg_marg / 10.0
+    batch_idx = 0
+
     for epoch in tqdm(range(1, epochs + 1), desc="TRAINING"):
         beta_kl = all_betas[epoch - 1]
 
@@ -554,6 +569,10 @@ def training_momixvae(
 
             # keep clusters on GPU during accumulation, move to CPU later
             epoch_clusters.append(batch_clusters)
+
+            if batch_idx >= start_reduce_reg_marg:
+                reg_marg = step_marginal_reg(reg_marg, batch_idx, max_T, min_reg)
+            batch_idx += 1
 
         # [PATCH APPLIED]
         if isinstance(epoch_loss, torch.Tensor):

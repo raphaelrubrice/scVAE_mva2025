@@ -16,7 +16,7 @@ from mixture_vae.mvae import MixtureVAE, ind_MoMVAE, MoMixVAE
 from mixture_vae.distributions import NormalDistribution, UniformDistribution, NegativeBinomial, Poisson, Student, CategoricalDistribution
 from mixture_vae.training import training_mvae, training_momixvae
 from mixture_vae.utils import *
-from mixture_vae.viz import plot_loss_components, plot_latent
+from mixture_vae.viz import plot_loss_components, plot_latent, plot_latent_comparison
 
 MODELS = {
     "MixtureVAE": MixtureVAE, 
@@ -384,18 +384,20 @@ def run_training(config: dict,
                          save_path=model_parent_folder + f"/Plots/losses_{run_tag}.pdf")
 
     if plot_latent_space:
-        plot_latent(model, 
-                val_loader,
-                level=-1,
-                true_labels=True,
-                title="Latent Space",
-                save_path=model_parent_folder + f"/Plots/true_latent_{run_tag}.pdf")
-        plot_latent(model, 
-                val_loader,
-                level=-1,
-                true_labels=False,
-                title="Latent Space",
-                save_path=model_parent_folder + f"/Plots/model_latent_{run_tag}.pdf")
+        levels = retrieve_label_levels(train_loader)
+        print("\n")
+        print("LEVELS", levels)
+        if max(levels) < model.n_levels:
+            levels = [model.n_levels + 1 - lvl for lvl in levels]
+        print("LEVELS", levels)
+        for level in levels:
+            print(f"Visualization of level {level}..")
+            plot_latent_comparison(model,
+                                    val_loader,
+                                    level=level,
+                                    title="Latent Space Comparison",
+                                    save_path=model_parent_folder + f"/Plots/Latent_lvl{level}_{run_tag}.pdf",
+                                    )
     return results
 
 def run_cv(config, folds, test_loader=None, 
@@ -521,7 +523,7 @@ if __name__ == "__main__":
 
     folds = create_folds(train_ds, 
                  n_splits=5, 
-                 batch_size=128)
+                 batch_size=64)
 
     
     # train_loader = DataLoader(train_ds, batch_size=64, shuffle=False)
@@ -530,7 +532,7 @@ if __name__ == "__main__":
     INPUT_DIM = 5
     HIDDEN = 32
     LATENT = 2
-    EPOCHS = 2
+    EPOCHS = 5
     WARMUP = 2
     latent_dist = "Student"
 
@@ -598,7 +600,7 @@ if __name__ == "__main__":
     }
 
     # CV
-    latent = False
+    latent = True
     cv_momix = run_cv(config_momix, folds, val_loader, plot_latent_space=latent, show_loss_every=1)
     cv_mvae = run_cv(config_mvae, folds, val_loader, plot_latent_space=latent, show_loss_every=1)
     cv_indmom = run_cv(config_indmom, folds, val_loader, plot_latent_space=latent, show_loss_every=1)
