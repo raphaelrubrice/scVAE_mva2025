@@ -31,6 +31,7 @@ def plot_figure1(df_list,
     cols = [col for col in figure1_plot_data.columns if 'Radj' not in col] + radj_cols
     figure1_plot_data = figure1_plot_data[cols]
 
+    print(figure1_plot_data)
     plt.figure(figsize=(7, 5))
 
     # -----------------------------
