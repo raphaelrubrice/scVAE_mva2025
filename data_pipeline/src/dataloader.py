@@ -9,11 +9,13 @@ Supports train/val/test split via AnnCollectionView.
 from pathlib import Path
 import numpy as np
 import torch
+import scipy
 import json
 import anndata as ad
 from anndata.experimental import AnnCollection, AnnLoader
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, SubsetRandomSampler
 from data_pipeline.src.DatasetWrapper import AnnDatasetWrapper
+from scanpy.preprocessing import sample
 
 
 def one_hot(idx: np.ndarray, num_classes: int) -> torch.Tensor:
@@ -66,13 +68,67 @@ def make_converter(label_maps_path: str | Path, one_hot_labels=False):
 #  build collection from shards
 def build_collection_from_shards(
     shard_dir: str | Path = "data/pbmc_processed/shards",
+    filter_genes: bool = False,
+    max_genes: int = 5000,
+    downsample: bool = False,
+    frac: float = 0.1,
 ):
-    """Load backed .h5ad shards and join into an AnnCollection."""
     shard_dir = Path(shard_dir)
     paths = sorted(shard_dir.glob("*.h5ad"))
-    adatas = [ad.read_h5ad(p, backed="r") for p in paths]
-    collection = AnnCollection(adatas, join_vars="outer", join_obs="outer", label="dataset")
-    print(f"✓ Built AnnCollection with {len(collection.obs)} total cells.")
+    if not paths:
+        raise FileNotFoundError(f"No .h5ad shards found in {shard_dir}")
+
+    # Load all shards in memory (needed if we want X)
+    adatas = [ad.read_h5ad(p) for p in paths]
+
+    if filter_genes:
+        # 1) Concatenate into a single AnnData WITH .X
+        big = ad.concat(
+            adatas,
+            join="outer",
+            label="dataset",
+            keys=[str(i) for i in range(len(adatas))],
+            index_unique="shard-",
+        )
+
+        X = big.X
+        if scipy.sparse.issparse(X):
+            # mean of x
+            means = np.asarray(X.mean(axis=0)).ravel()
+            # mean of x^2
+            means_sq = np.asarray(X.power(2).mean(axis=0)).ravel()
+            # std = sqrt(E[x^2] - (E[x])^2)
+            stds = np.sqrt(means_sq - means**2)
+        else:
+            stds = X.std(axis=0)
+
+        if max_genes > big.n_vars:
+            max_genes = big.n_vars
+
+        kept_idx = np.argsort(stds)[-max_genes:]  # highest-variance genes
+        kept_genes = big.var_names[kept_idx]
+
+        # 2) Filter each shard individually to those genes
+        adatas = [a[:, kept_genes] for a in adatas]
+
+    if downsample:
+        for adata in adatas:
+            # modif in-place
+            sample(adata, fraction=frac)
+    # 3) Build AnnCollection from the (optionally filtered) shards
+    collection = AnnCollection(
+        adatas,
+        join_vars="outer",
+        join_obs="outer",
+        label="dataset",
+    )
+
+    print(
+        f"✓ Built AnnCollection with {collection.n_obs} total cells "
+        f"and {collection.n_vars} genes."
+    )
+    if filter_genes:
+        return collection, kept_idx
     return collection
 
 # split collection to train/val/test
@@ -110,11 +166,17 @@ def build_dataloaders(
     train_frac=0.81,
     val_frac=0.09,
     seed=42,
+    pin_m=False,
+    **kwargs
 ):
     """Return (train_loader, val_loader, test_loader) PyTorch DataLoaders."""
 
     # Build collection and converter
-    collection = build_collection_from_shards(shard_dir)
+    if "filter_genes" in kwargs.keys():
+        collection, kept_idx = build_collection_from_shards(shard_dir, **kwargs)
+    else:
+        collection = build_collection_from_shards(shard_dir, **kwargs)
+        kept_idx = None
     converter = make_converter(label_maps_path, one_hot_labels=one_hot)
 
     # Split into train/val/test AnnCollectionViews
@@ -134,7 +196,7 @@ def build_dataloaders(
             batch_size=batch_size,
             shuffle=(split == "train" and shuffle),
             num_workers=num_workers,
-            pin_memory=False,
+            pin_memory=pin_m,
         )
         for split, ds in datasets.items()
     }
@@ -142,4 +204,115 @@ def build_dataloaders(
     print(
         f"✓ Train={len(datasets['train'])}, Val={len(datasets['val'])}, Test={len(datasets['test'])}"
     )
+    if kept_idx is not None:
+        return kept_idx, loaders["train"], loaders["val"], loaders["test"]
     return loaders["train"], loaders["val"], loaders["test"]
+
+
+def create_cv_loaders(train_dataset, 
+                    val_dataset, 
+                    n_folds=5, 
+                    batch_size=32, 
+                    shuffle=True, 
+                    seed=1234,
+                    num_workers=1,
+                    pin_m=False):
+    """
+    Create cross-validation dataloaders from train and validation datasets.
+    """
+    # Combine train + val datasets for CV
+    full_dataset = torch.utils.data.ConcatDataset([train_dataset, 
+                                                    val_dataset])
+    dataset_size = len(full_dataset)
+    indices = list(range(dataset_size))
+
+    if shuffle:
+        np.random.seed(seed)
+        np.random.shuffle(indices)
+
+    fold_sizes = dataset_size // n_folds
+    folds = []
+
+    for fold in range(n_folds):
+        val_start = fold * fold_sizes
+        val_end = val_start + fold_sizes if fold < n_folds - 1 else dataset_size
+
+        val_indices = indices[val_start:val_end]
+        train_indices = indices[:val_start] + indices[val_end:]
+
+        train_sampler = SubsetRandomSampler(train_indices)
+        val_sampler = SubsetRandomSampler(val_indices)
+
+        train_loader = DataLoader(full_dataset, 
+                                    batch_size=batch_size, 
+                                    sampler=train_sampler,
+                                    num_workers=num_workers,
+                                    pin_memory=pin_m)
+        val_loader = DataLoader(full_dataset, 
+                                batch_size=batch_size, 
+                                sampler=val_sampler,
+                                num_workers=num_workers,
+                                pin_memory=pin_m)
+
+        folds.append((train_loader, val_loader))
+
+    return folds
+
+def build_cv_dataloaders(
+    shard_dir="data/pbmc_processed/shards",
+    label_maps_path="data/pbmc_processed/label_maps.json",
+    batch_size=256,
+    n_folds=5,
+    one_hot=False,
+    shuffle=True,
+    num_workers=0,
+    train_frac=0.81,
+    val_frac=0.09,
+    seed=1234,
+    pin_m=False,
+    **kwargs
+):
+    """Return (train_loader, val_loader, test_loader) PyTorch DataLoaders."""
+
+    # Build collection and converter
+    if "filter_genes" in kwargs.keys():
+        collection, kept_idx = build_collection_from_shards(shard_dir, **kwargs)
+    else:
+        collection = build_collection_from_shards(shard_dir, **kwargs)
+        kept_idx = None
+    converter = make_converter(label_maps_path, one_hot_labels=one_hot)
+
+    # Split into train/val/test AnnCollectionViews
+    train_view, val_view, test_view = split_collection(collection, train_frac, val_frac, seed)
+
+    # Wrap each subset in our custom Dataset
+    datasets = {
+        "train": AnnDatasetWrapper(train_view, converter),
+        "val":   AnnDatasetWrapper(val_view, converter),
+        "test":  AnnDatasetWrapper(test_view, converter),
+    }
+
+    # Create pairs of train and val loaders for CV
+    folds = create_cv_loaders(datasets["train"], 
+                                datasets["val"], 
+                                n_folds=n_folds, 
+                                batch_size=batch_size, 
+                                shuffle=shuffle, 
+                                seed=seed,
+                                num_workers=num_workers,
+                                pin_m=pin_m)
+    # Test
+    test_loader = DataLoader(datasets["test"],
+                            batch_size=batch_size,
+                            shuffle=False,
+                            num_workers=num_workers,
+                            pin_memory=pin_m,
+                            )
+
+    print(
+        f"✓ Train={len(datasets['train'])}, Val={len(datasets['val'])}, Test={len(datasets['test'])}"
+    )
+    print(f"✓ Train/Val CV Folds (n°batches): {[(len(train),len(val)) for train,val in folds]}")
+    if kept_idx is not None:
+        return kept_idx, folds, test_loader
+    return folds, test_loader
