@@ -390,12 +390,128 @@ def kl_marginal_usage(level_probas: torch.Tensor,
     kl = (qbar * (qbar.log() - ref.log())).sum()
     return kl
 
+# def elbo_mixture_step(model: MixtureVAE,
+#                       x: torch.Tensor,
+#                       beta_kl: float = 1.0,
+#                       reg_marginal: float = 1.0,
+#                       track_clusters: bool = False,
+#                       n_levels: int = 1):
+#     # Forward (keeps all component samples)
+#     (input_params,
+#      z_mixture,
+#      latent_params_mixture,
+#      cluster_probas,
+#      all_z,
+#      all_latent) = model(x)
+
+#     # clusters
+#     if track_clusters:
+#         clusters = model.cluster_input(cluster_probas=cluster_probas)
+#     else:
+#         clusters = None
+
+#     BATCH_SIZE = x.size(0)
+#     K = model.n_components
+
+#     # 1) Reconstruction
+#     all_zk = torch.cat([all_z[k] for k in range(K)], dim=0)
+#     all_params_k = model.decode(all_zk)
+#     log_px_per_k = model.log_likelihood_input(x.repeat(K, 1), all_params_k)
+#     log_px_per_k = torch.stack(
+#         [log_px_per_k[i*BATCH_SIZE:(i+1)*BATCH_SIZE, :] for i in range(K)],
+#         dim=1
+#     )  # (B, K, input_dim)
+#     recon = (cluster_probas.unsqueeze(2) * log_px_per_k).sum(dim=1).sum(dim=1).mean()
+
+#     # 2) Latent KL
+#     all_latent_k = torch.cat([all_latent[k] for k in range(K)], dim=0)
+#     kl_per_k = model.kl_div(z=None, learned_params=all_latent_k)
+#     if kl_per_k.dim() > 1:
+#         kl_per_k = kl_per_k.sum(dim=1)
+#     kl_per_k = torch.stack(
+#         [kl_per_k[i*BATCH_SIZE:(i+1)*BATCH_SIZE] for i in range(K)],
+#         dim=1
+#     )  # (B, K)
+#     kl_z = (cluster_probas * kl_per_k).sum(dim=1).mean()
+
+#     # 3) Cluster KL (per-sample)
+#     ref = broadcast_cat_probs(model.prior_categorical.get_ref_proba(), cluster_probas)
+#     kl_pi = (cluster_probas * (cluster_probas.clamp_min(1e-12).log()
+#                                - ref.clamp_min(1e-12).log())).sum(dim=1).mean()
+
+#     # 4) Marginal usage KL (dataset-level within batch)
+#     kl_marg = torch.zeros((), device=cluster_probas.device, dtype=cluster_probas.dtype)
+#     if reg_marginal is not None and reg_marginal > 0:
+#         # Use the non-broadcast reference probs for KL(qbar || ref)
+#         ref_probs = model.prior_categorical.get_ref_proba()
+#         if not isinstance(ref_probs, torch.Tensor):
+#             ref_probs = torch.tensor(ref_probs, device=cluster_probas.device, dtype=cluster_probas.dtype)
+#         kl_marg = kl_marginal_usage(cluster_probas, ref_probs)
+
+#     # normalize per level (keep kl_marg un-normalized by default; you can choose otherwise)
+#     recon = recon / n_levels
+#     kl_z = kl_z / n_levels
+#     kl_pi = kl_pi / n_levels
+
+#     elbo = recon - beta_kl * (kl_z + kl_pi) - reg_marginal * kl_marg
+#     loss = -elbo
+
+#     return loss, dict(
+#         recon=recon.detach(),
+#         kl_latent=kl_z.detach(),
+#         kl_cluster=kl_pi.detach(),
+#         kl_marginal=kl_marg.detach(),
+#     ), clusters
+
+
+# def summed_elbo_mixture_step(model,
+#                             x,
+#                             beta_kl: float | None = None,
+#                             reg_marginal: float = 1.0,
+#                             track_clusters: bool = False):
+#     if beta_kl is None:
+#         betas_kl = [1.0 for _ in range(len(model.branches))]
+#     else:
+#         betas_kl = [float(beta_kl) for _ in range(len(model.branches))]
+
+#     P = {
+#         "recon": 0.0,
+#         "kl_latent": 0.0,
+#         "kl_cluster": 0.0,
+#         "kl_marginal": 0.0,
+#     }
+
+#     L = 0.0
+#     clusters = None
+
+#     for idx, (m, beta) in enumerate(zip(model.branches, betas_kl)):
+#         track_clusters_level = bool(track_clusters and idx == model.n_levels - 1)
+
+#         loss_value, parts, batch_clusters = elbo_mixture_step(
+#             m, x,
+#             beta_kl=beta,
+#             reg_marginal=reg_marginal,
+#             track_clusters=track_clusters_level,
+#             n_levels=model.n_levels
+#         )
+
+#         L += (loss_value / len(model.branches))
+
+#         if batch_clusters is not None:
+#             clusters = batch_clusters
+
+#         for pname in parts:
+#             P[pname] += (parts[pname] / len(model.branches))
+
+#     return L, P, clusters
+
 def elbo_mixture_step(model: MixtureVAE,
                       x: torch.Tensor,
                       beta_kl: float = 1.0,
                       reg_marginal: float = 1.0,
                       track_clusters: bool = False,
-                      n_levels: int = 1):
+                      n_levels: int = 1,
+                      scale_marg=None):
     # Forward (keeps all component samples)
     (input_params,
      z_mixture,
@@ -452,7 +568,8 @@ def elbo_mixture_step(model: MixtureVAE,
     recon = recon / n_levels
     kl_z = kl_z / n_levels
     kl_pi = kl_pi / n_levels
-
+    if scale_marg is not None:
+        kl_marg = kl_marg * scale_marg
     elbo = recon - beta_kl * (kl_z + kl_pi) - reg_marginal * kl_marg
     loss = -elbo
 
@@ -492,7 +609,8 @@ def summed_elbo_mixture_step(model,
             beta_kl=beta,
             reg_marginal=reg_marginal,
             track_clusters=track_clusters_level,
-            n_levels=model.n_levels
+            n_levels=1,
+            scale_marg=len(model.branches),
         )
 
         L += (loss_value / len(model.branches))
