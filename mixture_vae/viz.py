@@ -279,7 +279,14 @@ def plot_latent_comparison(
     Row 1: True labels (named + colored)
     Row 2: Model labels (Hungarian-matched to True numeric convention, then named + colored)
     Columns: Latent / UMAP | t-SNE (if applicable)
+
+    Notes:
+      - Only ONE legend is shown for the whole figure (taken from TRUE labels),
+        always placed outside the grid.
+      - Title includes: #true clusters, #model clusters, ARI.
     """
+    from sklearn.metrics.cluster import adjusted_rand_score
+
     # ------------------------------------------------------------------
     # Label associations + colors (MUST live inside the function)
     # ------------------------------------------------------------------
@@ -399,22 +406,10 @@ def plot_latent_comparison(
     LATENT = np.concatenate(all_latent, axis=0)
     true_labels = np.concatenate(all_true_labels).astype(int)
     model_labels_raw = np.concatenate(all_model_labels).astype(int)
-    
+
     if size_true < size_model:
         print(f"\nSKIPPING LEVEL {level}")
         return None
-    # ------------------------------------------------------------------
-    # DEBUG: cluster counts BEFORE alignment
-    # ------------------------------------------------------------------
-    print("[DEBUG] Cluster counts BEFORE Hungarian alignment")
-    print(f"  True labels    : {len(np.unique(true_labels))} clusters")
-    print(f"  Model labels   : {len(np.unique(model_labels_raw))} clusters")
-
-    print("  True label distribution:")
-    print("   ", Counter(true_labels))
-    print("  Model label distribution (raw):")
-    print("   ", Counter(model_labels_raw))
-    print()
 
     # ------------------------------------------------------------------
     # Hungarian alignment
@@ -424,28 +419,14 @@ def plot_latent_comparison(
     else:
         model_labels_aligned = model_labels_raw
 
-    # ------------------------------------------------------------------
-    # DEBUG: cluster counts AFTER alignment
-    # ------------------------------------------------------------------
-    print("[DEBUG] Cluster counts AFTER Hungarian alignment")
-    print(f"  Model labels (aligned): {len(np.unique(model_labels_aligned))} clusters")
-    print("  Model label distribution (aligned):")
-    print("   ", Counter(model_labels_aligned))
-    print()
-
-    # ------------------------------------------------------------------
-    # DEBUG: explicit numeric remapping (raw → aligned)
-    # ------------------------------------------------------------------
-    print("[DEBUG] Hungarian remapping (model raw → model aligned → textual)")
-    raw_ids = sorted(np.unique(model_labels_raw).tolist())
-    for rid in raw_ids:
-        aligned_ids = np.unique(model_labels_aligned[model_labels_raw == rid])
-        aligned_ids = aligned_ids.tolist()
-        aligned_txt = [to_name(i) for i in aligned_ids]
-        print(f"  raw {rid:>2} → aligned {aligned_ids} → {aligned_txt}")
-    print()
-
     model_labels = model_labels_aligned.astype(int)
+
+    # ------------------------------------------------------------------
+    # Cluster counts + ARI for title
+    # ------------------------------------------------------------------
+    true_clusters = len(np.unique(true_labels))
+    model_clusters = len(np.unique(model_labels))
+    ari = adjusted_rand_score(true_labels, model_labels)
 
     # ------------------------------------------------------------------
     # Projections
@@ -476,17 +457,23 @@ def plot_latent_comparison(
     model_names = np.array([to_name(i) for i in model_labels], dtype=object)
 
     # ------------------------------------------------------------------
-    # Plotting
+    # Plotting (single legend outside, from TRUE labels only)
     # ------------------------------------------------------------------
     n_cols = len(projections)
-    fig, axes = plt.subplots(2, n_cols, figsize=(6 * n_cols, 10), sharex="col", sharey="col")
+    fig, axes = plt.subplots(
+        2, n_cols, figsize=(6 * n_cols, 10), sharex="col", sharey="col"
+    )
     if n_cols == 1:
         axes = np.expand_dims(axes, axis=1)
+
+    legend_handles, legend_labels = None, None
 
     for col_idx, (proj_name, data) in enumerate(projections.items()):
         x_axis = data[:, 0]
         y_axis = data[:, 1] if data.shape[1] > 1 else np.zeros_like(x_axis)
 
+        # TRUE row: only the first TRUE subplot generates legend handles, then we remove it
+        true_legend_mode = "full" if col_idx == 0 else False
         sns.scatterplot(
             x=x_axis,
             y=y_axis,
@@ -496,10 +483,17 @@ def plot_latent_comparison(
             s=40,
             alpha=0.7,
             ax=axes[0, col_idx],
-            legend="full",
+            legend=true_legend_mode,
         )
         axes[0, col_idx].set_title(f"TRUE labels – {proj_name}")
 
+        if col_idx == 0:
+            legend_handles, legend_labels = axes[0, col_idx].get_legend_handles_labels()
+            leg = axes[0, col_idx].get_legend()
+            if leg is not None:
+                leg.remove()
+
+        # MODEL row: never create legend (same mapping as TRUE)
         sns.scatterplot(
             x=x_axis,
             y=y_axis,
@@ -509,7 +503,7 @@ def plot_latent_comparison(
             s=40,
             alpha=0.7,
             ax=axes[1, col_idx],
-            legend="full",
+            legend=False,
         )
         axes[1, col_idx].set_title(f"MODEL labels – {proj_name}")
 
@@ -518,8 +512,33 @@ def plot_latent_comparison(
         axes[0, col_idx].set_ylabel(f"{proj_name} 2")
         axes[1, col_idx].set_ylabel(f"{proj_name} 2")
 
-    fig.suptitle(title, fontsize=16)
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
+        # Ensure no legends accidentally appear
+        for r in (0, 1):
+            leg = axes[r, col_idx].get_legend()
+            if leg is not None:
+                leg.remove()
+
+    fig.suptitle(
+        f"{title}\nTrue clusters: {true_clusters}, Model clusters: {model_clusters}, ARI: {ari:.3f}",
+        fontsize=16,
+    )
+
+    # One legend for the entire figure, always outside
+    if legend_handles is not None and legend_labels is not None:
+        # seaborn can include a redundant first entry (the hue title). Remove if present.
+        if len(legend_labels) > 0 and legend_labels[0] == "":  # defensive
+            legend_handles, legend_labels = legend_handles[1:], legend_labels[1:]
+        fig.legend(
+            legend_handles,
+            legend_labels,
+            title="True labels",
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.5),
+            frameon=True,
+        )
+
+    # Leave space on the right for the legend
+    plt.tight_layout(rect=[0, 0, 0.85, 0.96])
 
     if save_path:
         os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else ".", exist_ok=True)
