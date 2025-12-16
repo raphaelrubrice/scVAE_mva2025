@@ -198,7 +198,7 @@ def training_mvae(
         scheduler = None
 
     max_T = len(dataloader) * epochs
-    start_reduce_reg_marg = int(0.8 * max_T) # keep constant for the first 80% steps
+    start_reduce_reg_marg = int(0.5 * max_T) # keep constant for the first 50% steps
     min_reg = reg_marg / 10.0
     batch_idx = 0
 
