@@ -323,7 +323,7 @@ def run_training(config: dict,
     beta_kl = config.get("beta_kl", 1.0)
     reg_marg = config.get("reg_marg", 10)
     warmup = config.get("warmup", None)
-    patience = config.get("patience", max(5,int(0.1*epochs)))
+    patience = config.get("patience", max(5,int(0.2*epochs)))
     tol = config.get("tol", 1e-3)
     save_path = config.get("save_path", f"./model_{config['model_type']}.ckpt")
     track_clusters = config.get("track_clusters", False)
