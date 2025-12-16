@@ -199,7 +199,7 @@ def training_mvae(
 
     max_T = len(dataloader) * epochs
     start_reduce_reg_marg = int(0.5 * max_T) # keep constant for the first 50% steps
-    min_reg = reg_marg / 2
+    min_reg = reg_marg / 10
     batch_idx = 0
 
     for epoch in tqdm(range(1, epochs + 1), desc="TRAINING"):
@@ -518,7 +518,7 @@ def training_momixvae(
 
     max_T = len(dataloader) * epochs
     start_reduce_reg_marg = int(0.5 * max_T) # keep constant for the first 80% steps
-    min_reg = reg_marg / 2
+    min_reg = reg_marg / 10
     batch_idx = 0
 
     for epoch in tqdm(range(1, epochs + 1), desc="TRAINING"):
