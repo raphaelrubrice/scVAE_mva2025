@@ -75,20 +75,18 @@ This model acts as an **ablation baseline** to isolate the effect of hierarchy.
 
 This model best reflects biological lineage structure.
 
----
+### Motivation and Solutions
 
-## PBMC Hierarchy
+To better motivate the proposed extensions, the table below summarizes the main limitations of a flat mixture prior and the corresponding solutions implemented in this project:
 
-We constructed a **four-level hierarchy**:
+| Limitation | Proposed solution |
+|---|---|
+| Standard Gaussian prior does not allow cell-type clustering | **MixtureVAE** replaces the Gaussian prior with a mixture distribution to learn latent clusters |
+| No hierarchical structure between clustering levels | **IndMoMVAE** trains multiple independent mixture branches to explore different clustering granularities |
+| No joint modeling of hierarchical levels | **MoMixVAE** uses a mixture-of-mixtures formulation to jointly learn clusters at multiple hierarchy levels |
 
-| Level | Description |
-|------|------------|
-| 1 | Stem vs Non-stem |
-| 2 | Major lineage (B / NK / T) |
-| 3 | CD4 vs CD8 (T-cells) |
-| 4 | Terminal subtypes (naive, memory, regulatory, etc.) |
-
-Nine PBMC datasets from 10x Genomics are downloaded, annotated, harmonized, and merged using a fully reproducible pipeline.
+> **Graphical models:**  
+> ![Graphical models of MixtureVAE, IndMoMVAE and MoMixVAE](./graphical_models.png)
 
 ---
 
@@ -139,73 +137,13 @@ Each cell is annotated with four hierarchical levels:
 
 Label metadata and dataset URLs are defined in `data_pipeline/src/config.py`.
 
-## Implemented Models
+## Experiment Summary
 
-### scVAE (Baseline)
-
-Reimplementation of scVAE (Grønbech et al., 2020):
-
-- Continuous latent variable `z`
-- Discrete cluster variable `y`
-- Gaussian mixture prior
-- Negative Binomial likelihood
-- ELBO objective with KL warm-up
-
-This model serves as the reference baseline.
-
----
-
-### MixtureVAE
-
-A modular generalization of scVAE:
-
-- Flexible latent priors (Normal, Student-t)
-- Explicit categorical cluster prior
-- Modular distribution and training framework
-- Supports clustering and generative modeling
-
----
-
-### IndMoMVAE (Independent Mixture-of-Mixtures)
-
-- Multiple independent mixture branches
-- Each branch learns a distinct clustering
-- No dependencies between hierarchy levels
-
-This model acts as an **ablation baseline** to isolate the effect of hierarchical coupling.
-
----
-
-### MoMixVAE (Hierarchical Mixture-of-Mixtures)
-
-- Explicit hierarchical dependencies between clustering levels
-- Coarse-to-fine latent organization
-- Structured variational posterior
-- Hierarchical ELBO with:
-  - β-scaled KL terms
-  - Marginal-usage regularization to prevent component collapse
-
-This model best captures biological lineage structure.
-
-## Experiments
-
-All experiments are conducted on PBMC data using the curated hierarchical labels.
-
-### Training notebooks
-
-- **All models (single notebook)**  
-  PBMC_experiments.ipynb
-
-- **MixtureVAE experiments**  
-  PBMC_experiments_MixtureVAE.ipynb
-
-- **IndMoMVAE experiments**  
-  PBMC_experiments_IndMoMVAE.ipynb
-
-- **MoMixVAE experiments**  
-  PBMC_experiments_MoMixVAE.ipynb
-
-Each notebook supports execution on **Google Colab** and locally.
+| Experiment | Description | Notebook / Script | Run on Colab |
+|:-----------|:------------|:------------------|:-------------|
+| **MixtureVAE** | Trains a mixture-prior VAE on the combined PBMC dataset | [`PBMC_experiments_MixtureVAE.ipynb`](./PBMC_experiments_MixtureVAE.ipynb) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/raphaelrubrice/scVAE_mva2025/blob/main/PBMC_experiments_MixtureVAE.ipynb) |
+| **IndMoMVAE** | Independent mixture branches to explore multiple clustering granularities | [`PBMC_experiments_IndMoMVAE.ipynb`](./PBMC_experiments_IndMoMVAE.ipynb) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/raphaelrubrice/scVAE_mva2025/blob/main/PBMC_experiments_IndMoMVAE.ipynb) |
+| **MoMixVAE** | Joint hierarchical clustering using a mixture-of-mixtures model | [`PBMC_experiments_MoMixVAE.ipynb`](./PBMC_experiments_MoMixVAE.ipynb) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/raphaelrubrice/scVAE_mva2025/blob/main/PBMC_experiments_MoMixVAE.ipynb) |
 
 ## Evaluation Metrics
 
