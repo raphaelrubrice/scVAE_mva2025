@@ -11,7 +11,7 @@
 [![MVA: Introduction to Probabilistic Graphical Models](https://img.shields.io/badge/MVA-Probabilistic%20Graphical%20Models-darkgreen.svg)](https://www.master-mva.com/cours/probabilistic-graphical-models/)
 
 
-[Paper](https://academic.oup.com/bioinformatics/article/36/16/4415/5838187?login=false) • [Original Code](https://github.com/scvae/scvae) • [Report](./documents/report.pdf) • [Poster](./documents/PGM_poster.pdf)
+[Paper](https://academic.oup.com/bioinformatics/article/36/16/4415/5838187?login=false) • [Original Code](https://github.com/scvae/scvae) • [Report](./RaphaelRubriceTiffneyAinaAdamKeddis_scVAE_report.pdf) • [Poster](./PGM_poster.pdf)
 
 *Course project – Introduction to Probabilistic Graphical Models  
 Master MVA (ENS Paris-Saclay)*
